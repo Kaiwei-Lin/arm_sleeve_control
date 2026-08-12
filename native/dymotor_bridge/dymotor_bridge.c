@@ -273,16 +273,9 @@ int arm_open(const ArmOpenConfig *config)
         }
     }
 
-    /* Vendor control examples transition the mainboard NMT state 0x80 -> 1. */
-    robot_StateMachine(g_arm.ctx, 0x80);
-    robot_StateMachine(g_arm.ctx, 1);
-    if (servo_off_all() != 0) {
-        release_session(1);
-        return fail(-6, "could not establish Servo Off during arm_open");
-    }
-
-    /* PVCTFast reads an SDK cache and has no validity return. Match the vendor
-       example's 1 s settling time at period_ms=500 without enabling motors. */
+    /* Opening is motion-command-free: no NMT transition and no Servo command.
+       PVCTFast reads an SDK cache and has no validity return, so allow it time
+       to populate before reporting the session as open. */
     wait_for_fast_feedback(config->fast_mode);
 
     g_arm.open = 1;
@@ -323,6 +316,15 @@ static int read_joint_feedback(int joint, JointFeedback *feedback)
         &sdk_bus,
         &sdk_error
     );
+
+    feedback->position = sdk_position;
+    feedback->velocity = sdk_velocity;
+    feedback->current = NAN; /* The SDK's PVCTFast declaration has no current output. */
+    feedback->torque = sdk_torque;
+    feedback->state = (uint32_t)sdk_state;
+    feedback->bus = (uint32_t)sdk_bus;
+    feedback->error = (uint32_t)sdk_error;
+
     if (g_diagnostics) {
         robot_motor_get_motor_id(g_arm.motors[joint], &motor_id, &can_id);
         fprintf(
@@ -340,17 +342,10 @@ static int read_joint_feedback(int joint, JointFeedback *feedback)
         );
         fflush(stderr);
     }
-    if (!isfinite(sdk_position) || !isfinite(sdk_velocity) || !isfinite(sdk_torque)) {
+    if (!isfinite(sdk_position) || !isfinite(sdk_velocity) || !isfinite(sdk_torque) ||
+        sdk_bus == 0U) {
         return fail(-4, "PVCT feedback is unavailable or invalid for joint %d", joint);
     }
-
-    feedback->position = sdk_position;
-    feedback->velocity = sdk_velocity;
-    feedback->current = NAN; /* The SDK's PVCTFast declaration has no current output. */
-    feedback->torque = sdk_torque;
-    feedback->state = (uint32_t)sdk_state;
-    feedback->bus = (uint32_t)sdk_bus;
-    feedback->error = (uint32_t)sdk_error;
     return 0;
 }
 
@@ -371,10 +366,8 @@ int arm_get_joint_state(
         state == NULL || bus == NULL || error == NULL) {
         return fail(-1, "arm_get_joint_state received a null output pointer");
     }
+    memset(&feedback, 0, sizeof(feedback));
     status = read_joint_feedback(joint, &feedback);
-    if (status != 0) {
-        return status;
-    }
     *position = feedback.position;
     *velocity = feedback.velocity;
     *current = feedback.current;
@@ -382,7 +375,7 @@ int arm_get_joint_state(
     *state = feedback.state;
     *bus = feedback.bus;
     *error = feedback.error;
-    return 0;
+    return status;
 }
 
 void arm_set_diagnostics(int enabled)
@@ -415,6 +408,13 @@ int arm_enable(void)
                 (unsigned)states[joint].error
             );
         }
+    }
+
+    /* This is the first state-changing boundary and is only reached after an
+       explicit enable request and valid, fault-free feedback from all joints. */
+    robot_StateMachine(g_arm.ctx, 0x80);
+    robot_StateMachine(g_arm.ctx, 1);
+    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
         if (!robot_motor_set_control_mode(g_arm.motors[joint], MOTOR_CTRL_MODE_POSITION)) {
             (void)servo_off_all();
             return fail(-5, "failed to set position mode for joint %d", joint);
@@ -444,7 +444,7 @@ int arm_enable(void)
 
 int arm_disable(void)
 {
-    if (!g_arm.open) {
+    if (!g_arm.open || !g_arm.enabled) {
         return 0;
     }
     return servo_off_all();
@@ -521,7 +521,7 @@ int arm_set_three_joint_positions(
 void arm_close(void)
 {
     if (g_arm.ctx != NULL) {
-        release_session(1);
+        release_session(g_arm.enabled);
     }
 }
 

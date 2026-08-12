@@ -93,3 +93,19 @@ def test_nonzero_motor_error_is_not_ignored() -> None:
     assert state.error == 21894
     with pytest.raises(FeedbackError, match="motor error code 21894"):
         validate_feedback(state, config.joints["shoulder_flexion"])
+
+
+def test_disable_does_not_call_bridge_before_enable() -> None:
+    class Library:
+        disable_calls = 0
+
+        def arm_disable(self):
+            self.disable_calls += 1
+            return 0
+
+    library = Library()
+    robot = DyMotorArm(load_robot_config())
+    robot._lib = library  # type: ignore[assignment]
+    robot.connected = True
+    robot.disable()
+    assert library.disable_calls == 0

@@ -118,7 +118,7 @@ class DyMotorArm(RobotArm):
         self.enabled = True
 
     def disable(self) -> None:
-        if self._lib is None or not self.connected:
+        if self._lib is None or not self.connected or not self.enabled:
             self.enabled = False
             return
         try:

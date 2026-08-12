@@ -101,7 +101,7 @@ python tools/record_sensors.py --fake --duration 2
 已确认：
 
 - `robot_create` + `robot_config_net` 创建并连接主板上下文。
-- 按位置示例在 motor object 建立后执行主板状态机 `0x80 → 1`；bridge 随后必须成功对三台电机执行 Servo Off，才把连接视为成功。
+- 厂家位置示例在 motor object 建立后执行主板状态机 `0x80 → 1`，但实机已确认该调用不适合放在只读连接路径；bridge 的 `arm_open` 不执行状态机、Servo 或位置命令。
 - `get_robot_motorlist` + `robot_create_motorObjectList` 枚举电机；bridge 要求 22/CAN2、23/CAN2、25/CAN2 各精确出现一次。
 - `robot_motor_get_PVCTFast` 提供 position、velocity、estimated torque、state 和 error 等缓存反馈。
 - `robot_motor_set_control_mode(..., MOTOR_CTRL_MODE_POSITION)` 切换位置模式，`CTRL_SERVO_ON/OFF` 控制使能。
@@ -171,7 +171,7 @@ export LD_LIBRARY_PATH="$PWD/third_party/dymotor_sdk/lib${LD_LIBRARY_PATH:+:$LD_
 python tools/read_pvct.py
 ```
 
-它只连接、验证三台电机并持续读取；不会 Servo On。输出中的 position/velocity/torque 已按配置的方向与零位转换为语义坐标。按 `Ctrl+C` 后执行 Servo Off 和 close。
+它只连接、验证三台电机并持续读取；不会执行状态机切换、Servo On/Off 或位置命令。输出中的 position/velocity/torque 已按配置的方向与零位转换为语义坐标。按 `Ctrl+C` 后只关闭未使能的 SDK 会话。
 
 首先核对：三个 motor/CAN 地址正确、反馈有限且稳定、error 均为 0；不要在存在错误或映射不符时继续。
 
@@ -189,11 +189,14 @@ find . -name 'libdymotor_bridge.so' -ls
 
 ```bash
 python tools/debug_bridge.py \
-    --joint shoulder_flexion \
+    --joint all \
+    --samples 3 \
     --library "$PWD/build/native/dymotor_bridge/libdymotor_bridge.so"
 ```
 
-该工具只连接、确认配置中的 CAN2/motor ID22、读取一次 PVCT 并关闭；不会 Servo On、切换控制模式或发送位置。它同时打印 C 侧原始诊断、Python 收到的 `wrapper_status`、state/bus/error 十进制和十六进制，以及实际加载的 `.so` 绝对路径。
+该工具只连接、确认配置中的 CAN2/motor ID22/23/25、重复读取 PVCT 并关闭；不会执行状态机切换、Servo On/Off、控制模式切换或位置发送。它同时打印 C 侧原始诊断、Python 收到的 `wrapper_status`、state/bus/error 十进制和十六进制，以及实际加载的 `.so` 绝对路径。`bus == 0` 会被判定为遥测缓存未就绪并返回 `wrapper_status=-4`，不会把全零输出当作有效反馈。
+
+厂家示例不是只读程序：读取 PVCT 前已经执行状态机切换、位置模式、Servo On 和位置发送。不要直接运行它来做静止诊断，也不要为了得到非零 PVCT 而把这些调用加回 `debug_bridge.py`。如果严格只读连接仍无法获得有效缓存，需要厂家确认“Servo Off 状态下启用 fast telemetry”的安全初始化顺序。
 
 与厂家示例对照时，先将示例中的 motor 改为相同的 ID/CAN，并删除或注释其 Servo On、位置模式和位置发送部分，仅保留初始化与 `robot_motor_get_PVCTFast` 读取。分别记录：
 
