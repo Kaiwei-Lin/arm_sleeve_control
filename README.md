@@ -175,6 +175,37 @@ python tools/read_pvct.py
 
 首先核对：三个 motor/CAN 地址正确、反馈有限且稳定、error 均为 0；不要在存在错误或映射不符时继续。
 
+### PVCT bridge 只读诊断
+
+修改 native bridge 后必须先重新构建，并确认不存在或未加载旧副本：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+find . -name 'libdymotor_bridge.so' -ls
+```
+
+然后用显式路径运行只读诊断：
+
+```bash
+python tools/debug_bridge.py \
+    --joint shoulder_flexion \
+    --library "$PWD/build/native/dymotor_bridge/libdymotor_bridge.so"
+```
+
+该工具只连接、确认配置中的 CAN2/motor ID22、读取一次 PVCT 并关闭；不会 Servo On、切换控制模式或发送位置。它同时打印 C 侧原始诊断、Python 收到的 `wrapper_status`、state/bus/error 十进制和十六进制，以及实际加载的 `.so` 绝对路径。
+
+与厂家示例对照时，先将示例中的 motor 改为相同的 ID/CAN，并删除或注释其 Servo On、位置模式和位置发送部分，仅保留初始化与 `robot_motor_get_PVCTFast` 读取。分别记录：
+
+```text
+vendor FastErrorCode
+bridge motor_error
+bridge wrapper_status
+loaded_so
+```
+
+厂家 FastErrorCode 为 0 时，bridge 的 `motor_error` 也必须为 0。任何真实非零 motor error 仍会被 SafetyController 拒绝；没有错误码白名单。
+
 ## Step 2：测试肘关节
 
 先 dry-run：

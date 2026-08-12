@@ -18,6 +18,7 @@ class JointState:
     current: float | None
     torque: float
     state: int
+    bus: int
     error: int
 
 
@@ -33,4 +34,3 @@ class JointCommand:
             "shoulder_abduction": self.shoulder_abduction,
             "elbow_flexion": self.elbow_flexion,
         }
-

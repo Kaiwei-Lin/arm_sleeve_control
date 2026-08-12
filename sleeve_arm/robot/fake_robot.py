@@ -51,6 +51,7 @@ class FakeRobotArm(RobotArm):
             current=0.0,
             torque=0.0,
             state=2 if self.enabled else 0,
+            bus=0,
             error=self._errors[joint_name],
         )
 

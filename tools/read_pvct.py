@@ -39,6 +39,7 @@ def print_states(controller: SafeArmController) -> None:
         print(f"  current: {current}")
         print(f"  torque: {state.torque:.6f} N.m")
         print(f"  state: {state.state}")
+        print(f"  bus: {state.bus}")
         print(f"  error: {state.error}")
         print()
 

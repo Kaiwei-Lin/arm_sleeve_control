@@ -30,6 +30,17 @@ typedef struct ArmSession {
 
 static ArmSession g_arm;
 static char g_last_error[256];
+static int g_diagnostics;
+
+typedef struct JointFeedback {
+    float position;
+    float velocity;
+    float current;
+    float torque;
+    uint32_t state;
+    uint32_t bus;
+    uint32_t error;
+} JointFeedback;
 
 static int fail(int code, const char *format, ...)
 {
@@ -53,6 +64,24 @@ static void sleep_prefill_cycle(void)
     const struct timespec delay = {0, ARM_PREFILL_NS};
     (void)nanosleep(&delay, NULL);
 #endif
+}
+
+static void wait_for_fast_feedback(int period_ms)
+{
+    uint64_t remaining_ms = (uint64_t)(unsigned int)period_ms * 2U;
+    while (remaining_ms > 0U) {
+        const unsigned int chunk_ms = remaining_ms > 1000U ? 1000U : (unsigned int)remaining_ms;
+#ifdef _WIN32
+        Sleep((DWORD)chunk_ms);
+#else
+        const struct timespec delay = {
+            (time_t)(chunk_ms / 1000U),
+            (long)(chunk_ms % 1000U) * 1000000L
+        };
+        (void)nanosleep(&delay, NULL);
+#endif
+        remaining_ms -= chunk_ms;
+    }
 }
 
 static int servo_off_all(void)
@@ -90,6 +119,7 @@ static void release_session(int request_servo_off)
         robot_destroy(g_arm.ctx);
     }
     memset(&g_arm, 0, sizeof(g_arm));
+    g_diagnostics = 0;
 }
 
 static int validate_open_config(const ArmOpenConfig *config)
@@ -99,6 +129,9 @@ static int validate_open_config(const ArmOpenConfig *config)
 
     if (config == NULL || config->local_ip == NULL || config->remote_ip == NULL) {
         return fail(-1, "arm_open received a null config or IP address");
+    }
+    if (sizeof(unsigned int) != sizeof(uint32_t)) {
+        return fail(-1, "SDK unsigned int is not compatible with uint32_t outputs");
     }
     if (config->local_port <= 0 || config->local_port > 65535 ||
         config->remote_port <= 0 || config->remote_port > 65535 ||
@@ -248,25 +281,31 @@ int arm_open(const ArmOpenConfig *config)
         return fail(-6, "could not establish Servo Off during arm_open");
     }
 
+    /* PVCTFast reads an SDK cache and has no validity return. Match the vendor
+       example's 1 s settling time at period_ms=500 without enabling motors. */
+    wait_for_fast_feedback(config->fast_mode);
+
     g_arm.open = 1;
     return 0;
 }
 
-int arm_get_joint_state(int joint, ArmJointState *state)
+static int read_joint_feedback(int joint, JointFeedback *feedback)
 {
-    float position = NAN;
-    float velocity = NAN;
-    float torque = NAN;
-    unsigned int machine_state = UINT32_MAX;
-    unsigned int mos_temperature = UINT32_MAX;
-    unsigned int winding_temperature = UINT32_MAX;
-    unsigned int bus_voltage = UINT32_MAX;
-    unsigned int error = UINT32_MAX;
+    float sdk_position = 0.0f;
+    float sdk_velocity = 0.0f;
+    float sdk_torque = 0.0f;
+    unsigned int sdk_state = 0U;
+    unsigned int sdk_mos_temperature = 0U;
+    unsigned int sdk_winding_temperature = 0U;
+    unsigned int sdk_bus = 0U;
+    unsigned int sdk_error = 0U;
+    unsigned short motor_id = 0U;
+    unsigned short can_id = 0U;
 
     if (!g_arm.open || g_arm.ctx == NULL) {
         return fail(-2, "arm is not open");
     }
-    if (!valid_joint(joint) || state == NULL) {
+    if (!valid_joint(joint) || feedback == NULL) {
         return fail(-1, "invalid joint index or state output");
     }
     if (g_arm.motors[joint] == NULL) {
@@ -275,31 +314,85 @@ int arm_get_joint_state(int joint, ArmJointState *state)
 
     robot_motor_get_PVCTFast(
         g_arm.motors[joint],
-        &position,
-        &velocity,
-        &torque,
-        &machine_state,
-        &mos_temperature,
-        &winding_temperature,
-        &bus_voltage,
-        &error
+        &sdk_position,
+        &sdk_velocity,
+        &sdk_torque,
+        &sdk_state,
+        &sdk_mos_temperature,
+        &sdk_winding_temperature,
+        &sdk_bus,
+        &sdk_error
     );
-    if (!isfinite(position) || !isfinite(velocity) || !isfinite(torque) ||
-        machine_state == UINT32_MAX || error == UINT32_MAX) {
+    if (g_diagnostics) {
+        robot_motor_get_motor_id(g_arm.motors[joint], &motor_id, &can_id);
+        fprintf(
+            stderr,
+            "[dymotor_bridge raw] motor=%u can=%u position=%.9g velocity=%.9g "
+            "current=unavailable torque=%.9g state=%u bus=%u error=%u\n",
+            (unsigned)motor_id,
+            (unsigned)can_id,
+            (double)sdk_position,
+            (double)sdk_velocity,
+            (double)sdk_torque,
+            sdk_state,
+            sdk_bus,
+            sdk_error
+        );
+        fflush(stderr);
+    }
+    if (!isfinite(sdk_position) || !isfinite(sdk_velocity) || !isfinite(sdk_torque)) {
         return fail(-4, "PVCT feedback is unavailable or invalid for joint %d", joint);
     }
 
-    state->position = position;
-    state->velocity = velocity;
-    state->torque = torque;
-    state->state = (uint32_t)machine_state;
-    state->error = (uint32_t)error;
+    feedback->position = sdk_position;
+    feedback->velocity = sdk_velocity;
+    feedback->current = NAN; /* The SDK's PVCTFast declaration has no current output. */
+    feedback->torque = sdk_torque;
+    feedback->state = (uint32_t)sdk_state;
+    feedback->bus = (uint32_t)sdk_bus;
+    feedback->error = (uint32_t)sdk_error;
     return 0;
+}
+
+int arm_get_joint_state(
+    int joint,
+    float *position,
+    float *velocity,
+    float *current,
+    float *torque,
+    uint32_t *state,
+    uint32_t *bus,
+    uint32_t *error)
+{
+    JointFeedback feedback;
+    int status;
+
+    if (position == NULL || velocity == NULL || current == NULL || torque == NULL ||
+        state == NULL || bus == NULL || error == NULL) {
+        return fail(-1, "arm_get_joint_state received a null output pointer");
+    }
+    status = read_joint_feedback(joint, &feedback);
+    if (status != 0) {
+        return status;
+    }
+    *position = feedback.position;
+    *velocity = feedback.velocity;
+    *current = feedback.current;
+    *torque = feedback.torque;
+    *state = feedback.state;
+    *bus = feedback.bus;
+    *error = feedback.error;
+    return 0;
+}
+
+void arm_set_diagnostics(int enabled)
+{
+    g_diagnostics = enabled != 0;
 }
 
 int arm_enable(void)
 {
-    ArmJointState states[ARM_JOINT_COUNT];
+    JointFeedback states[ARM_JOINT_COUNT];
     int sample;
     int joint;
 
@@ -311,7 +404,7 @@ int arm_enable(void)
     }
 
     for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-        if (arm_get_joint_state(joint, &states[joint]) != 0) {
+        if (read_joint_feedback(joint, &states[joint]) != 0) {
             return -4;
         }
         if (states[joint].error != 0) {
@@ -359,7 +452,7 @@ int arm_disable(void)
 
 int arm_set_joint_positions(const float positions[ARM_JOINT_COUNT], uint32_t mask)
 {
-    ArmJointState feedback[ARM_JOINT_COUNT];
+    JointFeedback feedback[ARM_JOINT_COUNT];
     int joint;
 
     if (!g_arm.open || !g_arm.enabled) {
@@ -375,7 +468,7 @@ int arm_set_joint_positions(const float positions[ARM_JOINT_COUNT], uint32_t mas
     }
     /* Defense in depth: never rely on the Python safety layer alone. */
     for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-        if (arm_get_joint_state(joint, &feedback[joint]) != 0) {
+        if (read_joint_feedback(joint, &feedback[joint]) != 0) {
             char feedback_error[sizeof(g_last_error)];
             snprintf(feedback_error, sizeof(feedback_error), "%s", g_last_error);
             (void)servo_off_all();

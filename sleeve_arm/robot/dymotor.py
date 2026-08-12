@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
+from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -26,14 +28,50 @@ class _ArmOpenConfig(ctypes.Structure):
     ]
 
 
-class _ArmJointState(ctypes.Structure):
-    _fields_ = [
-        ("position", ctypes.c_float),
-        ("velocity", ctypes.c_float),
-        ("torque", ctypes.c_float),
-        ("state", ctypes.c_uint32),
-        ("error", ctypes.c_uint32),
+@dataclass(frozen=True)
+class BridgeJointState:
+    wrapper_status: int
+    position: float
+    velocity: float
+    current: float | None
+    torque: float
+    state: int
+    bus: int
+    motor_error_code: int
+
+
+def _configure_library(lib: ctypes.CDLL) -> None:
+    lib.arm_open.argtypes = [ctypes.POINTER(_ArmOpenConfig)]
+    lib.arm_open.restype = ctypes.c_int
+    lib.arm_enable.argtypes = []
+    lib.arm_enable.restype = ctypes.c_int
+    lib.arm_disable.argtypes = []
+    lib.arm_disable.restype = ctypes.c_int
+    float_pointer = ctypes.POINTER(ctypes.c_float)
+    uint32_pointer = ctypes.POINTER(ctypes.c_uint32)
+    lib.arm_get_joint_state.argtypes = [
+        ctypes.c_int,
+        float_pointer,
+        float_pointer,
+        float_pointer,
+        float_pointer,
+        uint32_pointer,
+        uint32_pointer,
+        uint32_pointer,
     ]
+    lib.arm_get_joint_state.restype = ctypes.c_int
+    lib.arm_set_diagnostics.argtypes = [ctypes.c_int]
+    lib.arm_set_diagnostics.restype = None
+    lib.arm_set_joint_position.argtypes = [ctypes.c_int, ctypes.c_float]
+    lib.arm_set_joint_position.restype = ctypes.c_int
+    lib.arm_set_joint_positions.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_uint32]
+    lib.arm_set_joint_positions.restype = ctypes.c_int
+    lib.arm_set_three_joint_positions.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float]
+    lib.arm_set_three_joint_positions.restype = ctypes.c_int
+    lib.arm_close.argtypes = []
+    lib.arm_close.restype = None
+    lib.arm_last_error.argtypes = []
+    lib.arm_last_error.restype = ctypes.c_char_p
 
 
 class DyMotorArm(RobotArm):
@@ -43,6 +81,7 @@ class DyMotorArm(RobotArm):
         self.config = config
         self._library_path = Path(library_path).expanduser() if library_path else None
         self._lib: ctypes.CDLL | None = None
+        self._loaded_library_path: Path | None = None
         self.connected = False
         self.enabled = False
 
@@ -88,21 +127,60 @@ class DyMotorArm(RobotArm):
             self.enabled = False
 
     def read_joint_state(self, joint_name: str) -> JointState:
-        lib = self._require_connected()
-        index = self._joint_index(joint_name)
-        raw = _ArmJointState()
-        self._check(lib.arm_get_joint_state(index, ctypes.byref(raw)), "arm_get_joint_state")
+        raw = self.read_bridge_joint_state(joint_name)
+        self._check(raw.wrapper_status, "arm_get_joint_state")
         joint = self.config.joints[joint_name]
         zero = 0.0 if joint.zero_position is None else joint.zero_position
         return JointState(
             name=joint_name,
-            position=joint.direction * (float(raw.position) - zero),
-            velocity=joint.direction * float(raw.velocity),
-            current=None,  # robot_motor_get_PVCTFast does not expose current.
-            torque=joint.direction * float(raw.torque),
-            state=int(raw.state),
-            error=int(raw.error),
+            position=joint.direction * (raw.position - zero),
+            velocity=joint.direction * raw.velocity,
+            current=raw.current,
+            torque=joint.direction * raw.torque,
+            state=raw.state,
+            bus=raw.bus,
+            error=raw.motor_error_code,
         )
+
+    def read_bridge_joint_state(self, joint_name: str) -> BridgeJointState:
+        lib = self._require_connected()
+        index = self._joint_index(joint_name)
+        position = ctypes.c_float()
+        velocity = ctypes.c_float()
+        current = ctypes.c_float()
+        torque = ctypes.c_float()
+        state = ctypes.c_uint32()
+        bus = ctypes.c_uint32()
+        motor_error = ctypes.c_uint32()
+        wrapper_status = int(lib.arm_get_joint_state(
+            index,
+            ctypes.byref(position),
+            ctypes.byref(velocity),
+            ctypes.byref(current),
+            ctypes.byref(torque),
+            ctypes.byref(state),
+            ctypes.byref(bus),
+            ctypes.byref(motor_error),
+        ))
+        current_value = float(current.value)
+        return BridgeJointState(
+            wrapper_status=wrapper_status,
+            position=float(position.value),
+            velocity=float(velocity.value),
+            current=current_value if math.isfinite(current_value) else None,
+            torque=float(torque.value),
+            state=int(state.value),
+            bus=int(bus.value),
+            motor_error_code=int(motor_error.value),
+        )
+
+    def set_bridge_diagnostics(self, enabled: bool) -> None:
+        lib = self._require_connected()
+        lib.arm_set_diagnostics(int(enabled))
+
+    @property
+    def loaded_library_path(self) -> Path | None:
+        return self._loaded_library_path
 
     def set_joint_position(self, joint_name: str, position: float) -> None:
         self.set_joint_positions({joint_name: position})
@@ -137,28 +215,8 @@ class DyMotorArm(RobotArm):
         except OSError as exc:
             raise RobotError(f"failed to load DyMotor bridge {path}: {exc}") from exc
 
-        lib.arm_open.argtypes = [ctypes.POINTER(_ArmOpenConfig)]
-        lib.arm_open.restype = ctypes.c_int
-        lib.arm_enable.argtypes = []
-        lib.arm_enable.restype = ctypes.c_int
-        lib.arm_disable.argtypes = []
-        lib.arm_disable.restype = ctypes.c_int
-        lib.arm_get_joint_state.argtypes = [ctypes.c_int, ctypes.POINTER(_ArmJointState)]
-        lib.arm_get_joint_state.restype = ctypes.c_int
-        lib.arm_set_joint_position.argtypes = [ctypes.c_int, ctypes.c_float]
-        lib.arm_set_joint_position.restype = ctypes.c_int
-        lib.arm_set_joint_positions.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_uint32]
-        lib.arm_set_joint_positions.restype = ctypes.c_int
-        lib.arm_set_three_joint_positions.argtypes = [
-            ctypes.c_float,
-            ctypes.c_float,
-            ctypes.c_float,
-        ]
-        lib.arm_set_three_joint_positions.restype = ctypes.c_int
-        lib.arm_close.argtypes = []
-        lib.arm_close.restype = None
-        lib.arm_last_error.argtypes = []
-        lib.arm_last_error.restype = ctypes.c_char_p
+        _configure_library(lib)
+        self._loaded_library_path = path
         return lib
 
     def _resolve_library_path(self) -> Path:

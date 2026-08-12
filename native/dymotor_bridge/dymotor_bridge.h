@@ -31,19 +31,21 @@ typedef struct ArmOpenConfig {
     uint16_t can_ids[ARM_JOINT_COUNT];
 } ArmOpenConfig;
 
-typedef struct ArmJointState {
-    float position;
-    float velocity;
-    float torque;
-    uint32_t state;
-    uint32_t error;
-} ArmJointState;
-
 /* All functions return 0 on success and a negative value on failure. */
 ARM_API int arm_open(const ArmOpenConfig *config);
 ARM_API int arm_enable(void);
 ARM_API int arm_disable(void);
-ARM_API int arm_get_joint_state(int joint, ArmJointState *state);
+ARM_API int arm_get_joint_state(
+    int joint,
+    float *position,
+    float *velocity,
+    float *current,
+    float *torque,
+    uint32_t *state,
+    uint32_t *bus,
+    uint32_t *error
+);
+ARM_API void arm_set_diagnostics(int enabled);
 ARM_API int arm_set_joint_position(int joint, float position);
 ARM_API int arm_set_joint_positions(const float positions[ARM_JOINT_COUNT], uint32_t mask);
 ARM_API int arm_set_three_joint_positions(
@@ -59,4 +61,3 @@ ARM_API const char *arm_last_error(void);
 #endif
 
 #endif
-
