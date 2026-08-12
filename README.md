@@ -1,6 +1,6 @@
 # sleeve_arm_control
 
-面向真实三自由度机械臂的最小、安全控制层。当前数据流仅为：
+面向真实三自由度机械臂的安全控制层，以及与机械臂完全隔离的传感器采集基础。
 
 ```text
 Python tools -> SafetyController -> DyMotorArm (ctypes)
@@ -9,9 +9,78 @@ Python tools -> SafetyController -> DyMotorArm (ctypes)
 
 ## 项目当前阶段
 
-当前仅支持三个机械臂关节的位置控制与 PVCT 读取。袖套、传感器、channel 2/3/4、模型推理、动作识别、机器学习、GUI 和网络远控均未接入。
+Phase 1 支持三个机械臂关节的位置控制与 PVCT 读取。Phase 2 新增袖套、Optional 双 IMU、时间同步和数据记录；尚未接入模型推理、动作识别、传感器到机械臂映射、GUI 或网络远控。
 
 默认行为不会产生运动：`test_joint.py` 和 `test_three_joints.py` 只有显式加入 `--execute` 才会 Servo On 和发送目标。
+
+## Phase 2 — Sensor Foundation
+
+```text
+Sleeve ──────────────┐
+                     │
+Optional IMU1 ───────┼→ SensorSynchronizer → SensorSample → SensorRecorder
+                     │
+Optional IMU2 ───────┘
+```
+
+这条管线不导入 Robot backend，也不存在 `SensorSample → Robot` 路径。未来 Predictor 将消费同一个 `SensorSample`；当前没有创建模型实现，也没有在 Source 层做窗口、特征提取、归一化或通道到关节的映射。
+
+支持三种模式：Sleeve only、Sleeve + IMU1、Sleeve + IMU1 + IMU2。启用的 IMU 若在同步阈值内没有匹配帧，对应字段为 `None`，Sleeve 样本仍可记录，不会用陈旧 IMU 数据填充。
+
+### 已确认的传感器协议
+
+- Sleeve：ASCII 串口，115200/8N1，以 `;` 结束一条记录；每条为 11 个逗号分隔的有限数值。`SleeveFrame.channels` 完整保留全部 11 个字段，不筛选 CH2/CH3/CH4。
+- IMU770：二进制串口，460800/8N1；帧头为 `59 53`，使用 TLV 数据段和双字节校验。已支持加速度、角速度及可选四元数；主机收到完整有效帧时使用 `time.monotonic()`。
+
+协议来自旧项目 `arm_data_collector` 的已验证采集实现。串口名称因机器而异，必须在 `configs/sensors.yaml` 中填写；默认不会猜测 `/dev/ttyUSB*`。IMU 默认为 disabled，disabled 时不会打开串口。
+
+### 时间同步
+
+Sleeve 是主时间轴。同步器在每个已启用 IMU 的 `deque` 有界缓冲中选择与 Sleeve 时间差绝对值最小的帧。软件初始默认值为：
+
+```yaml
+max_time_delta_ms: 20
+buffer_duration_ms: 500
+```
+
+这些是待实验验证的软件默认值，不是传感器或人体运动的最终参数。内部同步统一使用 monotonic timestamp；metadata 另存人类可读的 wall clock 开始时间。
+
+### 读取与记录
+
+填写 Sleeve 端口后，只读 Sleeve：
+
+```bash
+python tools/read_sleeve.py
+```
+
+读取真实 IMU（必须先 enabled 并配置端口）：
+
+```bash
+python tools/read_imu.py --imu imu1
+```
+
+无硬件验证 IMU 和同步：
+
+```bash
+python tools/read_imu.py --imu imu1 --fake
+python tools/test_sensor_sync.py --fake
+```
+
+记录真实已启用传感器，或短时 fake 数据：
+
+```bash
+python tools/record_sensors.py
+python tools/record_sensors.py --fake --duration 2
+```
+
+每次会在 `recordings/YYYYMMDD_HHMMSS_xxxxxx/` 生成：
+
+- `samples.csv`：固定 schema，包括 monotonic timestamp、全部 `sleeve_ch_*`、IMU1 和 IMU2 字段；缺失 IMU 留空。
+- `metadata.yaml`：Git commit、采集开始时间、backend/串口配置、IMU enabled 状态和同步参数，不记录个人隐私。
+
+`Ctrl+C` 会停止循环、flush/close Recorder，并关闭所有 Source。采集线程不打印每帧，工具只低频显示统计。
+
+> CH2 与肘部、CH3/CH4 与肩部的关系仅是未来 Predictor 集成信息，当前没有实现任何机械臂 mapping。IMU 将来用于辅助模型判断人体手臂的运动方向和状态，而不是直接控制电机。
 
 ## 三个关节
 
@@ -47,7 +116,7 @@ Fast PVCT API **没有 current 输出**，所以 Python 中 `JointState.current`
 
 厂家只提供 Linux x86-64 ELF 的 `libMotorDrive.so`；因此 native bridge 必须在 Linux x86-64 上构建。Windows 本机不能链接该 `.so`，可使用装有 Linux 的机械臂控制机或 WSL2（且 WSL2 必须能够访问机械臂网卡）。
 
-需要：CMake 3.15+、C 编译器、Python 3.10+、PyYAML。建议先创建虚拟环境：
+需要：CMake 3.15+、C 编译器、Python 3.10+、PyYAML；真实串口 Source 还需要 pyserial。建议先创建虚拟环境：
 
 ```bash
 python3 -m venv .venv
@@ -177,23 +246,31 @@ bridge 先分别更新三个目标缓存，再调用一次 `robot_motor_set_big_
 
 ## 无机械臂测试
 
-测试只使用 `FakeRobotArm`，不会加载 native bridge 或连接硬件：
+测试只使用 `FakeRobotArm`、FakeSleeve 和 FakeIMU，不会加载 native bridge、串口或连接硬件：
 
 ```bash
 pytest
 ```
 
-覆盖语义关节映射、配置校验、position clamp、step/velocity limiting、FakeRobot 流程、启动反馈失败清理、error 触发 Servo Off 和 shutdown。
+覆盖 Phase 1 安全控制回归，以及领域 Frame、完整 Sleeve parser、IMU770 parser、Optional IMU、最近时间同步、buffer 清理、Fake Source 生命周期和 Recorder schema/metadata。
 
 ## 项目结构
 
 ```text
 configs/robot.yaml                 motor/CAN、网络与待验证安全参数
+configs/sensors.yaml               Sleeve、Optional IMU、同步与记录配置
 native/dymotor_bridge/             厂家 C SDK 的薄封装与 CMake
-sleeve_arm/domain/                 JointState / JointCommand
+sleeve_arm/domain/                 Joint 与 Sensor Frame/Sample
 sleeve_arm/robot/                  RobotArm、DyMotorArm、FakeRobotArm
 sleeve_arm/control/                SafetyController 与纯安全函数
+sleeve_arm/sources/                真实与 Fake Sleeve/IMU Source
+sleeve_arm/sync/                   Sleeve 主时间轴同步器
+sleeve_arm/recording/              SensorSample CSV Recorder
 tools/read_pvct.py                 只读硬件验证
+tools/read_sleeve.py               完整 Sleeve 只读工具
+tools/read_imu.py                  单 IMU 只读/Fake 工具
+tools/test_sensor_sync.py          Fake 时间同步验证
+tools/record_sensors.py            真实/Fake 统一记录工具
 tools/test_joint.py                默认 dry-run 的单关节小增量测试
 tools/test_three_joints.py         默认 dry-run 的三关节 batch 测试
 tests/                             纯离线测试
@@ -202,4 +279,4 @@ third_party/dymotor_sdk/           只读厂家 SDK 与示例
 
 ## 当前未验证内容
 
-本项目尚未连接真实机械臂，也没有执行 Servo On、位置发送或运动测试；Windows 环境也无法实际链接随包 Linux SDK。C bridge 的编译、动态库 ABI、真实网络连接、厂家反馈时序、三台电机发现、state/error 语义、方向/零位/限位/速度/电流/跟踪误差，均必须按以上 Step 1–4 在 Linux x86-64 控制机与现场急停条件下验证。
+Phase 2 尚未在本项目中连接真实 Sleeve 或 IMU770 串口；端口名、真实采样率、丢包率、20 ms 同步阈值和 500 ms 缓冲时长仍需现场验证。真实模型、Motion prediction、Sleeve → Robot、IMU → model fusion 均未实现。

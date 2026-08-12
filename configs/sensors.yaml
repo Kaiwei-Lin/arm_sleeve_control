@@ -1,0 +1,34 @@
+# Serial values come from the previously validated arm_data_collector implementation.
+# Port names remain unset because they are machine-specific.
+sensors:
+  sleeve:
+    enabled: true
+    backend: serial_ascii
+    port: null
+    baudrate: 115200
+    timeout_s: 1.0
+    delimiter: ";"
+    expected_fields: 11
+
+  imu1:
+    enabled: false
+    backend: imu770_serial
+    port: null
+    baudrate: 460800
+    timeout_s: 0.1
+
+  imu2:
+    enabled: false
+    backend: imu770_serial
+    port: null
+    baudrate: 460800
+    timeout_s: 0.1
+
+# Software defaults for initial synchronization tests, not validated experiment parameters.
+synchronization:
+  max_time_delta_ms: 20
+  buffer_duration_ms: 500
+
+recording:
+  output_dir: recordings
+  format: csv

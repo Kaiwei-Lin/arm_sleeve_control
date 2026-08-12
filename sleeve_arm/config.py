@@ -11,6 +11,7 @@ from sleeve_arm.domain.joint import JOINT_NAMES
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "robot.yaml"
+DEFAULT_SENSOR_CONFIG_PATH = PROJECT_ROOT / "configs" / "sensors.yaml"
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,38 @@ class RobotConfig:
     network: NetworkConfig
     safety: SafetyConfig
     joints: dict[str, JointConfig]
+
+
+@dataclass(frozen=True)
+class SensorEndpointConfig:
+    enabled: bool
+    backend: str
+    port: str | None
+    baudrate: int | None
+    timeout_s: float
+    delimiter: str | None = None
+    expected_fields: int | None = None
+
+
+@dataclass(frozen=True)
+class SynchronizationConfig:
+    max_time_delta_ms: float
+    buffer_duration_ms: float
+
+
+@dataclass(frozen=True)
+class RecordingConfig:
+    output_dir: Path
+    format: str
+
+
+@dataclass(frozen=True)
+class SensorConfig:
+    sleeve: SensorEndpointConfig
+    imu1: SensorEndpointConfig
+    imu2: SensorEndpointConfig
+    synchronization: SynchronizationConfig
+    recording: RecordingConfig
 
 
 def _optional_float(data: dict[str, Any], key: str) -> float | None:
@@ -151,3 +184,55 @@ def load_robot_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RobotConfig:
 
     return RobotConfig(network=network, safety=safety, joints=joints)
 
+
+def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorConfig:
+    config_path = Path(path).expanduser().resolve()
+    with config_path.open("r", encoding="utf-8") as stream:
+        raw = yaml.safe_load(stream)
+    if not isinstance(raw, dict):
+        raise ValueError(f"invalid sensor config: {config_path}")
+    sensors = raw.get("sensors")
+    sync = raw.get("synchronization")
+    recording = raw.get("recording")
+    if not isinstance(sensors, dict) or not isinstance(sync, dict) or not isinstance(recording, dict):
+        raise ValueError("sensor config requires sensors, synchronization, and recording mappings")
+
+    def endpoint(name: str) -> SensorEndpointConfig:
+        item = sensors.get(name)
+        if not isinstance(item, dict):
+            raise ValueError(f"sensors.{name} must be a mapping")
+        port = item.get("port")
+        baudrate = item.get("baudrate")
+        result = SensorEndpointConfig(
+            enabled=bool(item.get("enabled", False)),
+            backend=str(item.get("backend", "")),
+            port=None if port is None else str(port),
+            baudrate=None if baudrate is None else int(baudrate),
+            timeout_s=float(item.get("timeout_s", 1.0)),
+            delimiter=None if item.get("delimiter") is None else str(item["delimiter"]),
+            expected_fields=None if item.get("expected_fields") is None else int(item["expected_fields"]),
+        )
+        if not result.backend:
+            raise ValueError(f"sensors.{name}.backend is required")
+        if result.timeout_s <= 0:
+            raise ValueError(f"sensors.{name}.timeout_s must be positive")
+        if result.baudrate is not None and result.baudrate <= 0:
+            raise ValueError(f"sensors.{name}.baudrate must be positive or null")
+        return result
+
+    synchronization = SynchronizationConfig(
+        max_time_delta_ms=float(sync["max_time_delta_ms"]),
+        buffer_duration_ms=float(sync["buffer_duration_ms"]),
+    )
+    if synchronization.max_time_delta_ms < 0 or synchronization.buffer_duration_ms <= 0:
+        raise ValueError("synchronization deltas must be non-negative/positive")
+    if synchronization.max_time_delta_ms > synchronization.buffer_duration_ms:
+        raise ValueError("max_time_delta_ms cannot exceed buffer_duration_ms")
+
+    output_dir = Path(str(recording["output_dir"]))
+    if not output_dir.is_absolute():
+        output_dir = PROJECT_ROOT / output_dir
+    recording_config = RecordingConfig(output_dir.resolve(), str(recording["format"]))
+    if recording_config.format != "csv":
+        raise ValueError("only csv recording is supported")
+    return SensorConfig(endpoint("sleeve"), endpoint("imu1"), endpoint("imu2"), synchronization, recording_config)
