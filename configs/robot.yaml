@@ -1,0 +1,60 @@
+# Units: position [rad], velocity [rad/s], current [A], torque [N.m].
+# Network values and directions are copied from the commissioning assumptions
+# described below. They are NOT hardware-validated for this arm.
+network:
+  device_id: 254
+  local_ip: 192.168.3.245
+  local_port: 15020
+  remote_ip: 192.168.3.10
+  remote_port: 15000
+  fast_mode: 500
+  status: VALIDATED
+
+safety:
+  stable_feedback_samples: 3
+  stable_feedback_interval_s: 0.05
+  monitor_interval_s: 0.05
+
+joints:
+  shoulder_flexion:
+    motor_id: 22
+    can_id: 2
+    direction: -1
+    direction_status: NEEDS_HARDWARE_VALIDATION
+    zero_position: null
+    min_position: null
+    max_position: null
+    max_velocity: null
+    max_current: null
+    max_tracking_error: null
+    # Commissioning command-step cap (1 degree), not a validated motor limit.
+    max_position_step: 0.017453292519943295
+
+  shoulder_abduction:
+    motor_id: 23
+    can_id: 2
+    direction: 1
+    direction_status: NEEDS_HARDWARE_VALIDATION
+    zero_position: null
+    min_position: null
+    max_position: null
+    max_velocity: null
+    max_current: null
+    max_tracking_error: null
+    # Commissioning command-step cap (1 degree), not a validated motor limit.
+    max_position_step: 0.017453292519943295
+
+  elbow_flexion:
+    motor_id: 25
+    can_id: 2
+    direction: 1
+    direction_status: NEEDS_HARDWARE_VALIDATION
+    zero_position: null
+    min_position: null
+    max_position: null
+    max_velocity: null
+    max_current: null
+    max_tracking_error: null
+    # Commissioning command-step cap (1 degree), not a validated motor limit.
+    max_position_step: 0.017453292519943295
+
