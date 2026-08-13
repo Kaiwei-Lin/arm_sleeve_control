@@ -140,6 +140,13 @@ def test_model_string_action_labels(label: str, action: ArmAction) -> None:
     assert FlexModelPredictor(model_config(), MockModel([result])).predict(sample()).action is action
 
 
+def test_model_labeled_probability_mapping() -> None:
+    result = Result("Backward", {"Forward": 0.1, "Lateral": 0.2, "Backward": 0.7}, 10.0)
+    intent = FlexModelPredictor(model_config(), MockModel([result])).predict(sample())
+    assert intent.action_probabilities == pytest.approx((0.1, 0.2, 0.7))
+    assert intent.confidence == pytest.approx(0.7)
+
+
 def test_low_confidence_is_recorded_but_not_filtered() -> None:
     model = MockModel([Result(1, (0.49, 0.02, 0.49), 10.0)])
     intent = FlexModelPredictor(model_config(min_action_confidence=0.9), model).predict(sample())

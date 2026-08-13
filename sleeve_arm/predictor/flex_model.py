@@ -4,6 +4,7 @@ import importlib
 import math
 import operator
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from sleeve_arm.config import FlexModelConfig
@@ -75,10 +76,20 @@ class FlexModelPredictor(MotionPredictor):
                 raw_action = ArmAction(operator.index(action_value))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"invalid model action: {action_value!r}") from exc
+        probability_value = getattr(result, "action_probabilities", None)
         try:
-            probabilities = tuple(float(value) for value in result.action_probabilities)
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise ValueError("invalid model action_probabilities") from exc
+            if isinstance(probability_value, Mapping):
+                by_label = {str(key).strip().casefold(): value for key, value in probability_value.items()}
+                probabilities = tuple(
+                    float(by_label[label]) for label in ("forward", "lateral", "backward")
+                )
+            else:
+                probabilities = tuple(float(value) for value in probability_value)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "invalid model action_probabilities: "
+                f"type={type(probability_value).__name__}, value={probability_value!r}"
+            ) from exc
         if len(probabilities) < 3 or not all(math.isfinite(value) and 0 <= value <= 1 for value in probabilities):
             raise ValueError("action_probabilities must contain at least three finite values in [0, 1]")
         try:
