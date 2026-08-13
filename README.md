@@ -9,7 +9,7 @@ Python tools -> SafetyController -> DyMotorArm (ctypes)
 
 ## 项目当前阶段
 
-Phase 1 支持三个机械臂关节的位置控制与 PVCT 读取。Phase 2 新增袖套、Optional 双 IMU、时间同步和数据记录；尚未接入模型推理、动作识别、传感器到机械臂映射、GUI 或网络远控。
+Phase 1 支持三个机械臂关节的位置控制与 PVCT 读取。Phase 2 新增袖套、Optional 双 IMU、时间同步和数据记录。Phase 3 新增临时规则式 CH2 → 肘关节小范围验证链路；尚未接入训练模型、肩部袖套控制、IMU 融合、GUI 或网络远控。
 
 默认行为不会产生运动：`test_joint.py` 和 `test_three_joints.py` 只有显式加入 `--execute` 才会 Servo On 和发送目标。
 
@@ -208,6 +208,63 @@ loaded_so
 ```
 
 厂家 FastErrorCode 为 0 时，bridge 的 `motor_error` 也必须为 0。任何真实非零 motor error 仍会被 SafetyController 拒绝；没有错误码白名单。
+
+## Phase 3 — Sleeve-to-Elbow Control
+
+当前唯一的传感器控制链为：
+
+```text
+Sleeve CH2 → SensorSample → RuleBasedPredictor → MotionIntent.elbow_flexion
+           → ArmMapper → SafeArmController → elbow_flexion (ID25/CAN2)
+```
+
+串口协议的字段按顺序命名 CH1、CH2……，因此配置中的 `sleeve_channel: 2` 是用户可读的 1-based 编号，内部只在 Predictor 中转换为 `SleeveFrame.channels[1]`。ID22、ID23 不由袖套预测；Mapper 始终给它们启动反馈位置。IMU 即使启用也暂时旁路，RuleBasedPredictor 只读取 Sleeve。
+
+Phase 3 配置位于 `configs/phase3.yaml`。`input_min`/`input_max` 必须来自实测标定，默认 `null` 会阻止真实 Sleeve 控制启动。临时规则将 CH2 线性归一化并 clamp 到 `[0, 1]`，可用 `invert_input` 翻转方向；中心 deadzone 后可选 EMA。Mapper 将 `[0, 1]` 映射到启动肘位置附近 `-3°..+3°`，这只是首次验证窗口，不是机械限位，最终仍必须经过 Phase 1 的位置、单步、速度、跟踪误差和反馈错误检查。
+
+Watchdog 使用 monotonic timestamp：超过 `sensor_timeout_ms` 不产生新目标并保持最后安全目标；超过 `hard_timeout_ms` 抛出故障并进入 Servo Off/close。无效、缺失或非有限 CH2 不会产生命令。
+
+严格按以下顺序验收；只有最后一步可能 Servo On 并产生真实机械臂运动。
+
+### 1. 标定 CH2（不连接机械臂）
+
+```bash
+python tools/calibrate_sleeve_elbow.py
+```
+
+工具分别采集肘伸直和屈曲姿态，打印 median/min/max/std 及建议的 `input_min`、`input_max`、`invert_input`。写入配置前必须人工确认姿态和方向。
+
+### 2. FakeSleeve + FakeRobot
+
+```bash
+python tools/run_sleeve_elbow.py --sleeve fake --robot fake
+```
+
+### 3. 真实 Sleeve + FakeRobot
+
+```bash
+python tools/run_sleeve_elbow.py --sleeve real --robot fake
+```
+
+先观察 CH2 raw、normalized、filtered、target delta、sensor age 和 stale/invalid 统计，不连接真实机械臂。
+
+### 4. 真实 Sleeve + DyMotor dry-run
+
+```bash
+python tools/run_sleeve_elbow.py --sleeve real --robot dymotor
+```
+
+此模式连接并读取三路 PVCT、计算和预览 Safety 结果，但不 Servo On、不发送位置。
+
+### 5. 真实 Sleeve + DyMotor execute
+
+```bash
+python tools/run_sleeve_elbow.py --sleeve real --robot dymotor --execute
+```
+
+必须在急停可用、现场监护、配置完成且前四步结果正确后执行。顺序为三路稳定反馈 → 保存启动位置 → Sleeve fresh/CH2 有效 → Servo On → 首条启动位置命令 → 仅 ID25 在启动位置附近小范围跟随。`Ctrl+C`、source/robot 异常或 hard timeout 都停止新目标并执行 Servo Off、robot close、source close。
+
+尚未实现：CH3/CH4 肩部控制、训练模型、IMU 融合、三自由度袖套控制。未来只需实现同一 `MotionPredictor.predict(SensorSample) -> MotionIntent` contract 来替换 RuleBasedPredictor，不修改 Mapper、SafetyController 或 Robot 层。
 
 ## Step 2：测试肘关节
 
