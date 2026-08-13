@@ -1,7 +1,7 @@
 phase3:
   elbow:
     # Human-facing channel numbers are 1-based: CH2 == SleeveFrame.channels[1].
-    sleeve_channel: 2
+    sleeve_channel: 1
 
     # Must be filled from tools/calibrate_sleeve_elbow.py before real Sleeve use.
     input_min: null
@@ -13,11 +13,11 @@ phase3:
       type: ema
       alpha: 0.2
 
-    robot_range:
-      mode: relative
-      # Initial validation window around the startup elbow position, not joint limits.
-      min_delta_deg: -3.0
-      max_delta_deg: 3.0
+    # Absolute human elbow angles corresponding to input_min/input_max.
+    # Fill from the two calibration postures; these are not robot limits.
+    angle_range:
+      min_deg: null
+      max_deg: null
 
     invert_output: false
 

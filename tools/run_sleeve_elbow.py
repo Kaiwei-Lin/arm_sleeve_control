@@ -74,10 +74,20 @@ def main() -> int:
         elbow_config = phase3.elbow
         if args.sleeve == "fake" and elbow_config.input_min is None:
             # FakeSleeve CH2 is 1 + sin(...), so its deterministic range is [0, 2].
-            elbow_config = replace(elbow_config, input_min=0.0, input_max=2.0)
+            elbow_config = replace(
+                elbow_config, input_min=0.0, input_max=2.0,
+                angle_min_deg=0.0, angle_max_deg=90.0,
+            )
         predictor = RuleBasedPredictor(elbow_config)
         watchdog = SensorWatchdog(phase3.sensor_timeout_ms, phase3.hard_timeout_ms)
         robot_config = load_robot_config(args.robot_config)
+        if args.robot == "dymotor" and args.execute:
+            joint = robot_config.joints["elbow_flexion"]
+            if joint.zero_position is None or joint.min_position is None or joint.max_position is None:
+                raise ValueError(
+                    "elbow_flexion: absolute control requires calibrated "
+                    "zero_position, min_position, and max_position"
+                )
         robot = FakeRobotArm(robot_config) if args.robot == "fake" else DyMotorArm(robot_config, args.library)
         controller = SafeArmController(robot, robot_config)
 
@@ -155,7 +165,8 @@ def main() -> int:
                     f"control_fps={cycles / max(now - started, 1e-9):.1f} age_ms={age * 1000:.1f} "
                     f"CH{elbow_config.sleeve_channel}={predictor.last_raw!r} "
                     f"normalized={predictor.last_normalized!r} filtered={predictor.last_filtered!r} "
-                    f"target={target:.6f}rad delta={math.degrees(target - elbow):.2f}deg "
+                    f"absolute_angle={math.degrees(predictor.last_angle_rad or 0.0):.2f}deg "
+                    f"target={target:.6f}rad startup_delta={math.degrees(target - elbow):.2f}deg "
                     f"invalid={invalid_samples} stale={stale_count}"
                 )
                 last_print = now

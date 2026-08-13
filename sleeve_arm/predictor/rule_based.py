@@ -13,11 +13,14 @@ class RuleBasedPredictor(MotionPredictor):
     def __init__(self, config: Phase3ElbowConfig) -> None:
         if config.input_min is None or config.input_max is None:
             raise ValueError("real Sleeve control requires calibrated input_min and input_max")
+        if config.angle_min_deg is None or config.angle_max_deg is None:
+            raise ValueError("absolute elbow control requires calibrated angle_range min_deg and max_deg")
         self.config = config
         self.channel_index = config.sleeve_channel - 1
         self.last_raw: float | None = None
         self.last_normalized: float | None = None
         self.last_filtered: float | None = None
+        self.last_angle_rad: float | None = None
 
     def predict(self, sample: SensorSample) -> MotionIntent:
         if self.channel_index >= len(sample.sleeve.channels):
@@ -39,7 +42,14 @@ class RuleBasedPredictor(MotionPredictor):
         if self.config.filter.type == "ema" and self.last_filtered is not None:
             assert self.config.filter.alpha is not None
             filtered = self.config.filter.alpha * normalized + (1.0 - self.config.filter.alpha) * self.last_filtered
+        output = 1.0 - filtered if self.config.invert_output else filtered
+        assert self.config.angle_min_deg is not None and self.config.angle_max_deg is not None
+        angle_rad = math.radians(
+            self.config.angle_min_deg
+            + output * (self.config.angle_max_deg - self.config.angle_min_deg)
+        )
         self.last_raw = raw
         self.last_normalized = normalized
         self.last_filtered = filtered
-        return MotionIntent(timestamp=sample.timestamp, elbow_flexion=filtered)
+        self.last_angle_rad = angle_rad
+        return MotionIntent(timestamp=sample.timestamp, elbow_flexion=angle_rad)

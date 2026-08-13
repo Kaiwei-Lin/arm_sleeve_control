@@ -220,7 +220,7 @@ Sleeve CH2 → SensorSample → RuleBasedPredictor → MotionIntent.elbow_flexio
 
 串口协议的字段按顺序命名 CH1、CH2……，因此配置中的 `sleeve_channel: 2` 是用户可读的 1-based 编号，内部只在 Predictor 中转换为 `SleeveFrame.channels[1]`。ID22、ID23 不由袖套预测；Mapper 始终给它们启动反馈位置。IMU 即使启用也暂时旁路，RuleBasedPredictor 只读取 Sleeve。
 
-Phase 3 配置位于 `configs/phase3.yaml`。`input_min`/`input_max` 必须来自实测标定，默认 `null` 会阻止真实 Sleeve 控制启动。临时规则将 CH2 线性归一化并 clamp 到 `[0, 1]`，可用 `invert_input` 翻转方向；中心 deadzone 后可选 EMA。Mapper 将 `[0, 1]` 映射到启动肘位置附近 `-3°..+3°`，这只是首次验证窗口，不是机械限位，最终仍必须经过 Phase 1 的位置、单步、速度、跟踪误差和反馈错误检查。
+Phase 3 配置位于 `configs/phase3.yaml`。`input_min`/`input_max` 是两个人体标定姿态的 CH2 实测端点，`angle_range.min_deg/max_deg` 是这两个姿态对应的人体绝对肘角；任一缺失都会阻止控制启动。临时规则先将 CH2 clamp/归一化，再线性换算成绝对人体肘角 rad。Mapper 不叠加启动位置；DyMotor backend 以 `SDK target = zero_position + direction × semantic target` 转换，最终仍必须经过 Phase 1 的位置、单步、速度、跟踪误差和反馈错误检查。
 
 Watchdog 使用 monotonic timestamp：超过 `sensor_timeout_ms` 不产生新目标并保持最后安全目标；超过 `hard_timeout_ms` 抛出故障并进入 Servo Off/close。无效、缺失或非有限 CH2 不会产生命令。
 
@@ -271,10 +271,10 @@ python tools/run_sleeve_elbow.py --sleeve real --robot dymotor --execute
 Phase 4 保留 Phase 3 的 CH2 肘部规则，并用 pip 安装的 `flex_model_0003.FlexPredictor` 生成肩部人体语义：
 
 ```text
-CH2 ─→ RuleBasedPredictor ─→ normalized elbow ───────┐
+CH2 ─→ RuleBasedPredictor ─→ absolute elbow rad ─────┐
 CH2/CH3/CH4 ─→ FlexModelPredictor ─→ action+angle ──┼→ MotionIntent
                                                      ↓
-                         startup-relative ArmMapper → SafeArmController
+                         absolute shoulder ArmMapper → SafeArmController
                                                      ↓
                                      one three-joint batch Robot command
 ```
@@ -322,7 +322,7 @@ result = model.predict_raw(
 )
 ```
 
-action 接受模型的 `Forward`、`Lateral`、`Backward` 标签，也兼容整数 `0`、`1`、`2`，并固定映射为 `0=Forward`、`1=Lateral`、`2=Backward`。概率既可按该顺序返回序列，也可返回使用这三个标签作为键的映射。`angle_deg` 先转换为人体语义：Forward → shoulder flexion `+A`，Backward → flexion `-A`，Lateral → abduction `+A`，非当前肩部轴为 neutral。它不会直接发送给电机；Mapper 将人体语义夹到启动反馈附近的肩部 ±5°验证窗口，SafetyController 再执行 Phase 1 的位置、单步、速度、跟踪误差和 PVCT 错误检查。
+action 接受模型的 `Forward`、`Lateral`、`Backward` 标签，也兼容整数 `0`、`1`、`2`，并固定映射为 `0=Forward`、`1=Lateral`、`2=Backward`。概率既可按该顺序返回序列，也可返回使用这三个标签作为键的映射。`angle_deg` 是相对人体标定零位的绝对关节角：Forward → shoulder flexion `+A`，Backward → flexion `-A`，Lateral → abduction `+A`，非当前肩部轴为绝对语义零位。Mapper 直接输出该绝对语义 rad；DyMotor backend 再以 `SDK target = zero_position + direction × semantic target` 转换。真实执行要求肩部 `zero_position/min_position/max_position` 已标定，SafetyController 继续执行位置、单步、速度、跟踪误差和 PVCT 错误检查。
 
 模型概率必须至少包含三个 `[0,1]` 有限值；当前 action 对应概率作为 confidence telemetry。`min_action_confidence` 按 Phase 4 约束暂不参与过滤，避免低置信度造成突然回零。新 action 必须连续满足 `required_consecutive_frames` 才切换；候选未稳定时保持上一条已接受肩部 intent。无效 action/概率/角度或模型异常时保持最后安全目标，连续达到配置阈值则 FAULT 并安全退出。IMU 当前不传给模型，保持 Optional，可全部关闭。
 

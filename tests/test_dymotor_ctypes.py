@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+from dataclasses import replace
 
 import pytest
 
@@ -132,3 +133,22 @@ def test_connect_enables_requested_diagnostics_before_feedback_reads() -> None:
     robot.connect()
     robot.close()
     assert library.diagnostic_calls == [1]
+
+
+def test_absolute_semantic_target_is_transformed_before_bridge_call() -> None:
+    class Library:
+        sent: list[float] = []
+
+        def arm_set_joint_positions(self, positions, mask):
+            self.sent = [float(positions[index]) for index in range(3)]
+            return 0
+
+    config = load_robot_config()
+    flexion = replace(config.joints["shoulder_flexion"], zero_position=0.0388, direction=-1)
+    config = replace(config, joints={**config.joints, "shoulder_flexion": flexion})
+    robot = DyMotorArm(config)
+    library = Library()
+    robot._lib = library  # type: ignore[assignment]
+    robot.connected = robot.enabled = True
+    robot.set_joint_position("shoulder_flexion", 0.5)
+    assert library.sent[0] == pytest.approx(0.0388 - 0.5)

@@ -21,7 +21,6 @@ predictor:
     max_deg: null
 
 phase4_validation:
-  limited_motion: true
-  shoulder_flexion_max_delta_deg: 5.0
-  shoulder_abduction_max_delta_deg: 5.0
+  # Shoulder regression is an absolute human semantic angle. Real execution
+  # therefore requires calibrated shoulder zero/min/max in configs/robot.yaml.
   max_consecutive_prediction_errors: 3
