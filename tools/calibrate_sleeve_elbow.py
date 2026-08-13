@@ -69,6 +69,9 @@ def main() -> int:
         print(f"input_min: {low:.9g}")
         print(f"input_max: {high:.9g}")
         print(f"invert_input: {'true' if flexion['median'] < extension['median'] else 'false'}")
+        print("angle_range:")
+        print("  min_deg: null  # measured human angle at the extension posture")
+        print("  max_deg: null  # measured human angle at the flexion posture")
         return 0
     except (KeyboardInterrupt, EOFError):
         print("\nCalibration cancelled.")

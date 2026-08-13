@@ -26,10 +26,8 @@ class MotionIntent:
     def __post_init__(self) -> None:
         if not math.isfinite(self.timestamp):
             raise ValueError("MotionIntent timestamp must be finite")
-        if self.elbow_flexion is not None and (
-            not math.isfinite(self.elbow_flexion) or not 0 <= self.elbow_flexion <= 1
-        ):
-            raise ValueError("elbow_flexion must be null or normalized to [0, 1]")
+        if self.elbow_flexion is not None and not math.isfinite(self.elbow_flexion):
+            raise ValueError("elbow_flexion must be null or an absolute finite semantic angle in radians")
         for name in ("shoulder_flexion_rad", "shoulder_abduction_rad", "angle_deg", "inference_ms"):
             value = getattr(self, name)
             if value is not None and not math.isfinite(value):

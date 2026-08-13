@@ -67,10 +67,21 @@ def main() -> int:
         assert phase4.flex_model is not None
         elbow_config = phase3.elbow
         if args.sleeve == "fake" and elbow_config.input_min is None:
-            elbow_config = replace(elbow_config, input_min=0.0, input_max=2.0)
+            elbow_config = replace(
+                elbow_config, input_min=0.0, input_max=2.0,
+                angle_min_deg=0.0, angle_max_deg=90.0,
+            )
         watchdog = SensorWatchdog(phase3.sensor_timeout_ms, phase3.hard_timeout_ms)
 
         robot_config = load_robot_config(args.robot_config)
+        if args.robot == "dymotor" and args.execute:
+            for name in ("shoulder_flexion", "shoulder_abduction", "elbow_flexion"):
+                joint = robot_config.joints[name]
+                if joint.zero_position is None or joint.min_position is None or joint.max_position is None:
+                    raise ValueError(
+                        f"{name}: absolute model control requires calibrated "
+                        "zero_position, min_position, and max_position"
+                    )
         robot = (
             FakeRobotArm(robot_config)
             if args.robot == "fake"
@@ -111,11 +122,7 @@ def main() -> int:
 
         startup_states = controller.read_joint_states()
         startup = {name: item.position for name, item in startup_states.items()}
-        mapper = ArmMapper(
-            elbow_config, startup,
-            phase4.shoulder_flexion_max_delta_deg,
-            phase4.shoulder_abduction_max_delta_deg,
-        )
+        mapper = ArmMapper(elbow_config, startup)
         motion_enabled = args.robot == "fake" or args.execute
         if motion_enabled:
             controller.enable()

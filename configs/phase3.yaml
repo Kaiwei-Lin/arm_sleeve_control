@@ -13,11 +13,11 @@ phase3:
       type: ema
       alpha: 0.2
 
-    robot_range:
-      mode: relative
-      # Initial validation window around the startup elbow position, not joint limits.
-      min_delta_deg: -3.0
-      max_delta_deg: 180
+    # Absolute human elbow angles corresponding to input_min/input_max.
+    # Fill from the two calibration postures; these are not robot limits.
+    angle_range:
+      min_deg: -3
+      max_deg: 180
 
     invert_output: false
 

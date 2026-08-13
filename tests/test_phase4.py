@@ -8,7 +8,7 @@ import pytest
 
 from sleeve_arm.config import FlexModelConfig, load_phase3_config, load_phase4_config, load_robot_config
 from sleeve_arm.control import ArmMapper, SafeArmController
-from sleeve_arm.domain import ArmAction, SensorSample, SleeveFrame
+from sleeve_arm.domain import ArmAction, MotionIntent, SensorSample, SleeveFrame
 from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBasedPredictor
 from sleeve_arm.robot import FakeRobotArm
 from sleeve_arm.sources import FakeSleeveSource
@@ -61,9 +61,6 @@ predictor:
   action_stability: {{required_consecutive_frames: 3}}
   angle: {{min_deg: 0, max_deg: 90}}
 phase4_validation:
-  limited_motion: true
-  shoulder_flexion_max_delta_deg: 5
-  shoulder_abduction_max_delta_deg: 5
   max_consecutive_prediction_errors: 3
 """, encoding="utf-8")
     loaded = load_phase4_config(config)
@@ -147,6 +144,19 @@ def test_model_labeled_probability_mapping() -> None:
     assert intent.confidence == pytest.approx(0.7)
 
 
+def test_mapper_uses_absolute_shoulder_angles_not_startup_offsets() -> None:
+    startup = {"shoulder_flexion": 1.0, "shoulder_abduction": -0.5, "elbow_flexion": 0.25}
+    mapper = ArmMapper(load_phase3_config().elbow, startup)
+    targets = mapper.map(MotionIntent(
+        timestamp=1.0,
+        elbow_flexion=0.5,
+        shoulder_flexion_rad=0.4,
+        shoulder_abduction_rad=0.2,
+    ))
+    assert targets["shoulder_flexion"] == pytest.approx(0.4)
+    assert targets["shoulder_abduction"] == pytest.approx(0.2)
+
+
 def test_low_confidence_is_recorded_but_not_filtered() -> None:
     model = MockModel([Result(1, (0.49, 0.02, 0.49), 10.0)])
     intent = FlexModelPredictor(model_config(min_action_confidence=0.9), model).predict(sample())
@@ -200,7 +210,11 @@ def test_invalid_model_output_is_rejected(result: Result) -> None:
 
 def test_three_dof_mock_model_to_fake_robot_through_safety() -> None:
     phase3 = load_phase3_config().elbow
-    elbow_config = replace(phase3, input_min=0.0, input_max=40.0, filter=replace(phase3.filter, type="none", alpha=None))
+    elbow_config = replace(
+        phase3, input_min=0.0, input_max=40.0,
+        angle_min_deg=0.0, angle_max_deg=90.0,
+        filter=replace(phase3.filter, type="none", alpha=None),
+    )
     shoulder = FlexModelPredictor(model_config(required_consecutive_frames=1), MockModel([
         Result(1, (0.1, 0.8, 0.1), 30.0)
     ]))
@@ -210,7 +224,7 @@ def test_three_dof_mock_model_to_fake_robot_through_safety() -> None:
     controller = SafeArmController(robot, robot_config)
     controller.connect()
     startup = {name: state.position for name, state in controller.read_joint_states().items()}
-    mapper = ArmMapper(elbow_config, startup, 5.0, 5.0)
+    mapper = ArmMapper(elbow_config, startup)
 
     controller.enable()
     intent = predictor.predict(sample(ch2=40.0))
@@ -218,6 +232,7 @@ def test_three_dof_mock_model_to_fake_robot_through_safety() -> None:
     controller.shutdown()
 
     assert safe["shoulder_flexion"] == 0.0
+    # The model angle is absolute; Phase 1's one-degree step cap approaches it safely.
     assert safe["shoulder_abduction"] == pytest.approx(math.radians(1))
     assert safe["elbow_flexion"] == pytest.approx(math.radians(1))
     assert robot.events == ["connect", "enable", "disable", "close"]

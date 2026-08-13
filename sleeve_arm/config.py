@@ -105,8 +105,8 @@ class Phase3ElbowConfig:
     invert_input: bool
     deadzone: float
     filter: Phase3FilterConfig
-    min_delta_deg: float
-    max_delta_deg: float
+    angle_min_deg: float | None
+    angle_max_deg: float | None
     invert_output: bool
 
 
@@ -136,8 +136,6 @@ class FlexModelConfig:
 class Phase4Config:
     predictor_backend: str
     flex_model: FlexModelConfig | None
-    shoulder_flexion_max_delta_deg: float
-    shoulder_abduction_max_delta_deg: float
     max_consecutive_prediction_errors: int
 
 
@@ -299,11 +297,9 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
     phase3 = raw.get("phase3") if isinstance(raw, dict) else None
     elbow = phase3.get("elbow") if isinstance(phase3, dict) else None
     filter_raw = elbow.get("filter") if isinstance(elbow, dict) else None
-    range_raw = elbow.get("robot_range") if isinstance(elbow, dict) else None
+    range_raw = elbow.get("angle_range") if isinstance(elbow, dict) else None
     if not all(isinstance(item, dict) for item in (phase3, elbow, filter_raw, range_raw)):
-        raise ValueError("phase3 config requires phase3.elbow.filter and robot_range mappings")
-    if range_raw.get("mode") != "relative":
-        raise ValueError("phase3.elbow.robot_range.mode must be relative")
+        raise ValueError("phase3 config requires phase3.elbow.filter and angle_range mappings")
 
     filter_config = Phase3FilterConfig(
         type=str(filter_raw.get("type", "none")),
@@ -317,8 +313,8 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
             invert_input=bool(elbow.get("invert_input", False)),
             deadzone=float(elbow.get("deadzone", 0.0)),
             filter=filter_config,
-            min_delta_deg=float(range_raw["min_delta_deg"]),
-            max_delta_deg=float(range_raw["max_delta_deg"]),
+            angle_min_deg=_optional_float(range_raw, "min_deg"),
+            angle_max_deg=_optional_float(range_raw, "max_deg"),
             invert_output=bool(elbow.get("invert_output", False)),
         ),
         sensor_timeout_ms=float(phase3["sensor_timeout_ms"]),
@@ -327,8 +323,6 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
     )
     numeric_values = {
         "deadzone": config.elbow.deadzone,
-        "min_delta_deg": config.elbow.min_delta_deg,
-        "max_delta_deg": config.elbow.max_delta_deg,
         "sensor_timeout_ms": config.sensor_timeout_ms,
         "hard_timeout_ms": config.hard_timeout_ms,
         "control_hz": config.control_hz,
@@ -339,6 +333,8 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
             ("input_min", config.elbow.input_min),
             ("input_max", config.elbow.input_max),
             ("filter.alpha", filter_config.alpha),
+            ("angle_range.min_deg", config.elbow.angle_min_deg),
+            ("angle_range.max_deg", config.elbow.angle_max_deg),
         )
         if value is not None
     )
@@ -356,8 +352,10 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
         raise ValueError("filter.type must be none or ema")
     if filter_config.type == "ema" and (filter_config.alpha is None or not 0 < filter_config.alpha <= 1):
         raise ValueError("EMA filter requires alpha in (0, 1]")
-    if config.elbow.min_delta_deg > 0 or config.elbow.max_delta_deg < 0:
-        raise ValueError("robot delta range must contain the startup position (0 degrees)")
+    if (config.elbow.angle_min_deg is None) != (config.elbow.angle_max_deg is None):
+        raise ValueError("angle_range min_deg and max_deg must both be set or both be null")
+    if config.elbow.angle_min_deg is not None and config.elbow.angle_min_deg >= config.elbow.angle_max_deg:
+        raise ValueError("angle_range min_deg must be less than max_deg")
     if config.sensor_timeout_ms <= 0 or config.hard_timeout_ms <= config.sensor_timeout_ms:
         raise ValueError("timeouts must satisfy 0 < sensor_timeout_ms < hard_timeout_ms")
     if config.control_hz <= 0:
@@ -429,13 +427,9 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
     config = Phase4Config(
         predictor_backend=backend,
         flex_model=flex_model,
-        shoulder_flexion_max_delta_deg=float(validation["shoulder_flexion_max_delta_deg"]),
-        shoulder_abduction_max_delta_deg=float(validation["shoulder_abduction_max_delta_deg"]),
         max_consecutive_prediction_errors=int(validation.get("max_consecutive_prediction_errors", 3)),
     )
-    if validation.get("limited_motion") is not True:
-        raise ValueError("phase4_validation.limited_motion must remain true")
-    values = [config.shoulder_flexion_max_delta_deg, config.shoulder_abduction_max_delta_deg]
+    values = []
     if flex_model is not None:
         values.extend((flex_model.min_action_confidence, flex_model.angle_min_deg, flex_model.angle_max_deg))
     if config.predictor_backend not in ("flex_model", "rule_based"):
@@ -451,8 +445,6 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
             raise ValueError("required_consecutive_frames must be at least 1")
         if  flex_model.angle_max_deg < flex_model.angle_min_deg:
             raise ValueError("angle range must satisfy 0 <= min_deg <= max_deg")
-    if config.shoulder_flexion_max_delta_deg <= 0 or config.shoulder_abduction_max_delta_deg <= 0:
-        raise ValueError("shoulder validation deltas must be positive")
     if config.max_consecutive_prediction_errors < 1:
         raise ValueError("max_consecutive_prediction_errors must be at least 1")
     return config

@@ -19,6 +19,8 @@ def elbow_config(**changes):
     defaults = {
         "input_min": 10.0,
         "input_max": 20.0,
+        "angle_min_deg": 0.0,
+        "angle_max_deg": 100.0,
         "filter": replace(config.filter, type="none", alpha=None),
     }
     defaults.update(changes)
@@ -30,11 +32,12 @@ def test_uncalibrated_real_input_is_rejected() -> None:
         RuleBasedPredictor(load_phase3_config().elbow)
 
 
-@pytest.mark.parametrize(("raw", "expected"), ((10.0, 0.0), (20.0, 1.0), (15.0, 0.5), (0.0, 0.0), (30.0, 1.0)))
-def test_normalization_and_clamp(raw: float, expected: float) -> None:
+@pytest.mark.parametrize(("raw", "normalized", "angle_deg"), ((10.0, 0.0, 0.0), (20.0, 1.0, 100.0), (15.0, 0.5, 50.0), (0.0, 0.0, 0.0), (30.0, 1.0, 100.0)))
+def test_normalization_and_absolute_angle_mapping(raw: float, normalized: float, angle_deg: float) -> None:
     predictor = RuleBasedPredictor(elbow_config(deadzone=0.0))
     intent = predictor.predict(SensorSample(raw, SleeveFrame(raw, (0.0, raw))))
-    assert intent.elbow_flexion == pytest.approx(expected)
+    assert predictor.last_normalized == pytest.approx(normalized)
+    assert intent.elbow_flexion == pytest.approx(math.radians(angle_deg))
     assert intent.shoulder_flexion_rad is None
     assert intent.shoulder_abduction_rad is None
 
@@ -48,9 +51,9 @@ def test_invert_deadzone_and_ema() -> None:
     predictor = RuleBasedPredictor(config)
     first = predictor.predict(SensorSample(1.0, SleeveFrame(1.0, (0.0, 10.0))))
     second = predictor.predict(SensorSample(2.0, SleeveFrame(2.0, (0.0, 14.5))))
-    assert first.elbow_flexion == 1.0
+    assert first.elbow_flexion == pytest.approx(math.radians(100.0))
     assert predictor.last_normalized == 0.5  # inverted 0.55 falls inside center deadzone
-    assert second.elbow_flexion == 0.75
+    assert second.elbow_flexion == pytest.approx(math.radians(75.0))
 
 
 def test_missing_channel_is_rejected() -> None:
@@ -63,23 +66,17 @@ def test_missing_channel_is_rejected() -> None:
         SleeveFrame(1.0, (0.0, math.inf))
 
 
-def test_mapper_holds_shoulders_and_maps_small_relative_elbow_range() -> None:
+def test_mapper_holds_shoulders_and_passes_absolute_elbow_angle() -> None:
     startup = {"shoulder_flexion": 0.2, "shoulder_abduction": -0.3, "elbow_flexion": 1.0}
     mapper = ArmMapper(elbow_config(deadzone=0.0), startup)
     low = mapper.map(MotionIntent(1.0, elbow_flexion=0.0))
     middle = mapper.map(MotionIntent(1.0, elbow_flexion=0.5))
     high = mapper.map(MotionIntent(1.0, elbow_flexion=1.0))
-    assert low["elbow_flexion"] == pytest.approx(1.0 + math.radians(-3))
-    assert middle["elbow_flexion"] == pytest.approx(1.0)
-    assert high["elbow_flexion"] == pytest.approx(1.0 + math.radians(3))
+    assert low["elbow_flexion"] == pytest.approx(0.0)
+    assert middle["elbow_flexion"] == pytest.approx(0.5)
+    assert high["elbow_flexion"] == pytest.approx(1.0)
     assert high["shoulder_flexion"] == startup["shoulder_flexion"]
     assert high["shoulder_abduction"] == startup["shoulder_abduction"]
-
-
-def test_mapper_keeps_half_at_startup_for_asymmetric_range() -> None:
-    startup = {"shoulder_flexion": 0.0, "shoulder_abduction": 0.0, "elbow_flexion": 1.0}
-    mapper = ArmMapper(elbow_config(min_delta_deg=-2.0, max_delta_deg=3.0), startup)
-    assert mapper.map(MotionIntent(1.0, elbow_flexion=0.5))["elbow_flexion"] == 1.0
 
 
 def test_watchdog_fresh_stale_hard_and_invalid_timestamp() -> None:
@@ -98,7 +95,7 @@ def test_fake_end_to_end_uses_safety_and_only_moves_elbow() -> None:
     controller = SafeArmController(robot, robot_config)
     controller.connect()
     startup = {name: state.position for name, state in controller.read_joint_states().items()}
-    config = elbow_config(input_min=0.0, input_max=1.0, deadzone=0.0)
+    config = elbow_config(input_min=0.0, input_max=1.0, angle_min_deg=0.0, angle_max_deg=90.0, deadzone=0.0)
     predictor = RuleBasedPredictor(config)
     mapper = ArmMapper(config, startup)
     source = FakeSleeveSource()
