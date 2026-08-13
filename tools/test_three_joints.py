@@ -43,6 +43,8 @@ def main() -> int:
     args = parse_args()
     config = load_robot_config(args.config)
     controller = SafeArmController(DyMotorArm(config, args.library), config)
+    print(f"Config: {config}")
+    print(f"Library path: {args.library}")
     exit_code = 0
     try:
         controller.connect()

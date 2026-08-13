@@ -18,7 +18,7 @@ predictor:
   angle:
     min_deg: 0.0
     # Required: fill from the actual model training-label range.
-    max_deg: null
+    max_deg: 180
 
 phase4_validation:
   limited_motion: true

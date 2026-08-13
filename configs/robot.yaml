@@ -22,13 +22,13 @@ joints:
     direction: -1
     direction_status: NEEDS_HARDWARE_VALIDATION
     zero_position: null
-    min_position: null
-    max_position: null
+    min_position: -1.74
+    max_position: 3.5
     max_velocity: null
     max_current: null
     max_tracking_error: null
     # Commissioning command-step cap (1 degree), not a validated motor limit.
-    max_position_step: 0.017453292519943295
+    max_position_step: null
 
   shoulder_abduction:
     motor_id: 23
@@ -37,24 +37,24 @@ joints:
     direction_status: NEEDS_HARDWARE_VALIDATION
     zero_position: null
     min_position: null
-    max_position: null
+    max_position: 3.14
     max_velocity: null
     max_current: null
     max_tracking_error: null
     # Commissioning command-step cap (1 degree), not a validated motor limit.
-    max_position_step: 0.017453292519943295
+    max_position_step: null
 
   elbow_flexion:
     motor_id: 25
     can_id: 2
-    direction: 1
+    direction: -1
     direction_status: NEEDS_HARDWARE_VALIDATION
     zero_position: null
-    min_position: null
-    max_position: null
+    min_position: -0.17
+    max_position: 2.36
     max_velocity: null
     max_current: null
     max_tracking_error: null
     # Commissioning command-step cap (1 degree), not a validated motor limit.
-    max_position_step: 0.017453292519943295
+    max_position_step: null
 

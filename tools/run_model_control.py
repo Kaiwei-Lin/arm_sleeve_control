@@ -37,7 +37,7 @@ class RuntimeState(Enum):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Flex model + CH2 elbow control; real motion requires --execute.")
     parser.add_argument("--sleeve", choices=("fake", "real"), default="real")
-    parser.add_argument("--robot", choices=("fake", "dymotor"), default="fake")
+    parser.add_argument("--robot", choices=("fake", "dymotor"), default="dymotor")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--duration", type=float)
     parser.add_argument("--robot-config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -73,7 +73,6 @@ def main() -> int:
         controller.connect()
         controller.read_joint_states()
         state = RuntimeState.ROBOT_READY
-
         source = FakeSleeveSource() if args.sleeve == "fake" else create_sleeve_source(load_sensor_config(args.sensor_config))
         sync = SensorSynchronizer()
         source.start()
