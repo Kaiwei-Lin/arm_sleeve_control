@@ -10,12 +10,24 @@ from sleeve_arm.domain import MotionIntent
 class ArmMapper:
     """Map normalized elbow semantics into a small startup-relative radian window."""
 
-    def __init__(self, config: Phase3ElbowConfig, startup_positions: Mapping[str, float]) -> None:
+    def __init__(
+        self,
+        config: Phase3ElbowConfig,
+        startup_positions: Mapping[str, float],
+        shoulder_flexion_max_delta_deg: float | None = None,
+        shoulder_abduction_max_delta_deg: float | None = None,
+    ) -> None:
         required = {"shoulder_flexion", "shoulder_abduction", "elbow_flexion"}
         if set(startup_positions) != required or not all(math.isfinite(value) for value in startup_positions.values()):
             raise ValueError("startup_positions must contain three finite semantic joint positions")
         self.config = config
         self.startup_positions = dict(startup_positions)
+        self.shoulder_flexion_max_delta_rad = (
+            None if shoulder_flexion_max_delta_deg is None else math.radians(shoulder_flexion_max_delta_deg)
+        )
+        self.shoulder_abduction_max_delta_rad = (
+            None if shoulder_abduction_max_delta_deg is None else math.radians(shoulder_abduction_max_delta_deg)
+        )
 
     def map(self, intent: MotionIntent) -> dict[str, float]:
         if intent.elbow_flexion is None:
@@ -25,11 +37,25 @@ class ArmMapper:
         maximum = math.radians(self.config.max_delta_deg)
         delta = minimum * (1.0 - 2.0 * value) if value <= 0.5 else maximum * (2.0 * value - 1.0)
         elbow = self.startup_positions["elbow_flexion"] + delta
+        shoulder_flexion = self._shoulder_target(
+            "shoulder_flexion", intent.shoulder_flexion_rad, self.shoulder_flexion_max_delta_rad
+        )
+        shoulder_abduction = self._shoulder_target(
+            "shoulder_abduction", intent.shoulder_abduction_rad, self.shoulder_abduction_max_delta_rad
+        )
         return {
-            "shoulder_flexion": self.startup_positions["shoulder_flexion"],
-            "shoulder_abduction": self.startup_positions["shoulder_abduction"],
+            "shoulder_flexion": shoulder_flexion,
+            "shoulder_abduction": shoulder_abduction,
             "elbow_flexion": elbow,
         }
+
+    def _shoulder_target(self, name: str, semantic_angle: float | None, limit: float | None) -> float:
+        if semantic_angle is None:
+            return self.startup_positions[name]
+        if limit is None:
+            raise ValueError("shoulder validation limits are required for shoulder MotionIntent")
+        delta = min(max(semantic_angle, -limit), limit)
+        return self.startup_positions[name] + delta
 
 
 class SensorWatchdog:

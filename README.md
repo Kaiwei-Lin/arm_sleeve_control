@@ -264,7 +264,88 @@ python tools/run_sleeve_elbow.py --sleeve real --robot dymotor --execute
 
 必须在急停可用、现场监护、配置完成且前四步结果正确后执行。顺序为三路稳定反馈 → 保存启动位置 → Sleeve fresh/CH2 有效 → Servo On → 首条启动位置命令 → 仅 ID25 在启动位置附近小范围跟随。`Ctrl+C`、source/robot 异常或 hard timeout 都停止新目标并执行 Servo Off、robot close、source close。
 
-尚未实现：CH3/CH4 肩部控制、训练模型、IMU 融合、三自由度袖套控制。未来只需实现同一 `MotionPredictor.predict(SensorSample) -> MotionIntent` contract 来替换 RuleBasedPredictor，不修改 Mapper、SafetyController 或 Robot 层。
+以上是 Phase 3 的边界；Phase 3 本身不包含 CH3/CH4 肩部控制、训练模型、IMU 融合或三自由度袖套控制。Phase 4 在下面通过同一 `MotionPredictor.predict(SensorSample) -> MotionIntent` contract 接入外部模型，不修改 SafetyController 或 Robot 层。
+
+## Phase 4 — FlexPredictor Model Integration
+
+Phase 4 保留 Phase 3 的 CH2 肘部规则，并用 pip 安装的 `flex_model_0003.FlexPredictor` 生成肩部人体语义：
+
+```text
+CH2 ─→ RuleBasedPredictor ─→ normalized elbow ───────┐
+CH2/CH3/CH4 ─→ FlexModelPredictor ─→ action+angle ──┼→ MotionIntent
+                                                     ↓
+                         startup-relative ArmMapper → SafeArmController
+                                                     ↓
+                                     one three-joint batch Robot command
+```
+
+通道严格按 `[CH2, CH3, CH4]` 传给模型，即 `SleeveFrame.channels[1:4]`。模型模块只在 `sleeve_arm/predictor/flex_model.py` 动态导入，`FlexPredictor()` 在 predictor 构造时初始化一次并在每帧复用；项目不复制或修改模型文件。若 pip 包未安装，会明确报告预期模块名，不会回退到假模型或 RuleBasedPredictor。
+
+`configs/phase4.yaml` 中必须填写三组各 3 个有限值：
+
+```yaml
+calibration:
+  baseline: [b1, b2, b3]
+  scale: [s1, s2, s3]
+  trial_rest: [r1, r2, r3]
+
+angle:
+  min_deg: 0.0
+  max_deg: <模型训练标签的真实上限>
+```
+
+调用保持厂家 API 不变：
+
+```python
+result = model.predict_raw(
+    flex=[ch2, ch3, ch4],
+    calibration_baseline=baseline,
+    calibration_scale=scale,
+    trial_rest=trial_rest,
+)
+```
+
+action 固定映射为 `0=Forward`、`1=Lateral`、`2=Backward`。`angle_deg` 先转换为人体语义：Forward → shoulder flexion `+A`，Backward → flexion `-A`，Lateral → abduction `+A`，非当前肩部轴为 neutral。它不会直接发送给电机；Mapper 将人体语义夹到启动反馈附近的肩部 ±5°验证窗口，SafetyController 再执行 Phase 1 的位置、单步、速度、跟踪误差和 PVCT 错误检查。
+
+模型概率必须至少包含三个 `[0,1]` 有限值；当前 action 对应概率作为 confidence telemetry。`min_action_confidence` 按 Phase 4 约束暂不参与过滤，避免低置信度造成突然回零。新 action 必须连续满足 `required_consecutive_frames` 才切换；候选未稳定时保持上一条已接受肩部 intent。无效 action/概率/角度或模型异常时保持最后安全目标，连续达到配置阈值则 FAULT 并安全退出。IMU 当前不传给模型，保持 Optional，可全部关闭。
+
+严格按以下顺序验证；只有最后一步可能 Servo On：
+
+### 1. 模型单独测试（不连接 Robot）
+
+```bash
+python tools/test_flex_model.py
+```
+
+历史数据离线回放同样不连接 Sleeve 或 Robot：
+
+```bash
+python tools/test_flex_model.py --input recordings/.../samples.csv
+```
+
+### 2. 真实 Sleeve + Model + FakeRobot
+
+```bash
+python tools/run_model_control.py --sleeve real --robot fake
+```
+
+### 3. 真实 Sleeve + Model + DyMotor dry-run
+
+```bash
+python tools/run_model_control.py --sleeve real --robot dymotor
+```
+
+该步骤只读取真实 PVCT、推理、映射并预览 Safety 结果；不 Servo On、不发送位置。
+
+### 4. 最终真机 execute
+
+```bash
+python tools/run_model_control.py --sleeve real --robot dymotor --execute
+```
+
+现场急停和监护必须就绪，并在前三步确认方向、角度和目标正确后，分别缓慢测试 Forward、Lateral、Backward。首次测试仍只允许启动位置附近的小范围，不代表人体绝对角度复现。
+
+如果需要回归 Phase 3，将 `predictor.backend` 设为 `rule_based`，并继续使用 `tools/run_sleeve_elbow.py`。尚未实现 IMU-assisted inference、新模型训练和更细粒度方向模型。
 
 ## Step 2：测试肘关节
 

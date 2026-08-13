@@ -1,0 +1,29 @@
+predictor:
+  backend: flex_model
+  model_module: flex_model_0003
+  model_class: FlexPredictor
+
+  # Human-facing 1-based channels: CH2/3/4 -> channels[1]/[2]/[3].
+  sleeve_channels: [2, 3, 4]
+
+  calibration:
+    baseline: [null, null, null]
+    scale: [null, null, null]
+    trial_rest: [null, null, null]
+
+  # Reserved for experiment telemetry; Phase 4 does not filter by confidence.
+  min_action_confidence: 0.60
+
+  action_stability:
+    required_consecutive_frames: 3
+
+  angle:
+    min_deg: 0.0
+    # Required: fill from the actual model training-label range.
+    max_deg: null
+
+phase4_validation:
+  limited_motion: true
+  shoulder_flexion_max_delta_deg: 5.0
+  shoulder_abduction_max_delta_deg: 5.0
+  max_consecutive_prediction_errors: 3

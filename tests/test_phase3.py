@@ -35,8 +35,8 @@ def test_normalization_and_clamp(raw: float, expected: float) -> None:
     predictor = RuleBasedPredictor(elbow_config(deadzone=0.0))
     intent = predictor.predict(SensorSample(raw, SleeveFrame(raw, (0.0, raw))))
     assert intent.elbow_flexion == pytest.approx(expected)
-    assert intent.shoulder_flexion is None
-    assert intent.shoulder_abduction is None
+    assert intent.shoulder_flexion_rad is None
+    assert intent.shoulder_abduction_rad is None
 
 
 def test_invert_deadzone_and_ema() -> None:

@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "robot.yaml"
 DEFAULT_SENSOR_CONFIG_PATH = PROJECT_ROOT / "configs" / "sensors.yaml"
 DEFAULT_PHASE3_CONFIG_PATH = PROJECT_ROOT / "configs" / "phase3.yaml"
+DEFAULT_PHASE4_CONFIG_PATH = PROJECT_ROOT / "configs" / "phase4.yaml"
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,29 @@ class Phase3Config:
     sensor_timeout_ms: float
     hard_timeout_ms: float
     control_hz: float
+
+
+@dataclass(frozen=True)
+class FlexModelConfig:
+    model_module: str
+    model_class: str
+    sleeve_channels: tuple[int, int, int]
+    baseline: tuple[float, float, float]
+    scale: tuple[float, float, float]
+    trial_rest: tuple[float, float, float]
+    min_action_confidence: float
+    required_consecutive_frames: int
+    angle_min_deg: float
+    angle_max_deg: float
+
+
+@dataclass(frozen=True)
+class Phase4Config:
+    predictor_backend: str
+    flex_model: FlexModelConfig | None
+    shoulder_flexion_max_delta_deg: float
+    shoulder_abduction_max_delta_deg: float
+    max_consecutive_prediction_errors: int
 
 
 def _optional_float(data: dict[str, Any], key: str) -> float | None:
@@ -337,4 +361,80 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
         raise ValueError("timeouts must satisfy 0 < sensor_timeout_ms < hard_timeout_ms")
     if config.control_hz <= 0:
         raise ValueError("control_hz must be positive")
+    return config
+
+
+def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4Config:
+    config_path = Path(path).expanduser().resolve()
+    with config_path.open("r", encoding="utf-8") as stream:
+        raw = yaml.safe_load(stream)
+    predictor = raw.get("predictor") if isinstance(raw, dict) else None
+    calibration = predictor.get("calibration") if isinstance(predictor, dict) else None
+    stability = predictor.get("action_stability") if isinstance(predictor, dict) else None
+    angle = predictor.get("angle") if isinstance(predictor, dict) else None
+    validation = raw.get("phase4_validation") if isinstance(raw, dict) else None
+    if not all(isinstance(item, dict) for item in (predictor, calibration, stability, angle, validation)):
+        raise ValueError("phase4 config requires predictor calibration/stability/angle and phase4_validation")
+
+    def triple(name: str, values: Any) -> tuple[float, float, float]:
+        if not isinstance(values, list) or len(values) != 3 or any(value is None for value in values):
+            raise ValueError(f"predictor.calibration.{name} requires exactly three non-null values")
+        result = tuple(float(value) for value in values)
+        if not all(math.isfinite(value) for value in result):
+            raise ValueError(f"predictor.calibration.{name} values must be finite")
+        return result  # type: ignore[return-value]
+
+    channels_raw = predictor.get("sleeve_channels")
+    if not isinstance(channels_raw, list) or len(channels_raw) != 3:
+        raise ValueError("predictor.sleeve_channels requires exactly three channels")
+    channels = tuple(int(value) for value in channels_raw)
+    if channels != (2, 3, 4):
+        raise ValueError("FlexPredictor sleeve_channels must be exactly [2, 3, 4]")
+    backend = str(predictor.get("backend", ""))
+    flex_model = None
+    if backend == "flex_model":
+        maximum = angle.get("max_deg")
+        if maximum is None:
+            raise ValueError("predictor.angle.max_deg must be configured for Phase 4")
+        flex_model = FlexModelConfig(
+            model_module=str(predictor.get("model_module", "")),
+            model_class=str(predictor.get("model_class", "")),
+            sleeve_channels=channels,  # type: ignore[arg-type]
+            baseline=triple("baseline", calibration.get("baseline")),
+            scale=triple("scale", calibration.get("scale")),
+            trial_rest=triple("trial_rest", calibration.get("trial_rest")),
+            min_action_confidence=float(predictor.get("min_action_confidence", 0.6)),
+            required_consecutive_frames=int(stability.get("required_consecutive_frames", 3)),
+            angle_min_deg=float(angle.get("min_deg", 0.0)),
+            angle_max_deg=float(maximum),
+        )
+    config = Phase4Config(
+        predictor_backend=backend,
+        flex_model=flex_model,
+        shoulder_flexion_max_delta_deg=float(validation["shoulder_flexion_max_delta_deg"]),
+        shoulder_abduction_max_delta_deg=float(validation["shoulder_abduction_max_delta_deg"]),
+        max_consecutive_prediction_errors=int(validation.get("max_consecutive_prediction_errors", 3)),
+    )
+    if validation.get("limited_motion") is not True:
+        raise ValueError("phase4_validation.limited_motion must remain true")
+    values = [config.shoulder_flexion_max_delta_deg, config.shoulder_abduction_max_delta_deg]
+    if flex_model is not None:
+        values.extend((flex_model.min_action_confidence, flex_model.angle_min_deg, flex_model.angle_max_deg))
+    if config.predictor_backend not in ("flex_model", "rule_based"):
+        raise ValueError("predictor.backend must be flex_model or rule_based")
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("phase4 numeric values must be finite")
+    if flex_model is not None:
+        if not flex_model.model_module or not flex_model.model_class:
+            raise ValueError("model_module and model_class are required")
+        if not 0 <= flex_model.min_action_confidence <= 1:
+            raise ValueError("min_action_confidence must be in [0, 1]")
+        if flex_model.required_consecutive_frames < 1:
+            raise ValueError("required_consecutive_frames must be at least 1")
+        if flex_model.angle_min_deg < 0 or flex_model.angle_max_deg < flex_model.angle_min_deg:
+            raise ValueError("angle range must satisfy 0 <= min_deg <= max_deg")
+    if config.shoulder_flexion_max_delta_deg <= 0 or config.shoulder_abduction_max_delta_deg <= 0:
+        raise ValueError("shoulder validation deltas must be positive")
+    if config.max_consecutive_prediction_errors < 1:
+        raise ValueError("max_consecutive_prediction_errors must be at least 1")
     return config
