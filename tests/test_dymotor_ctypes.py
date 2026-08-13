@@ -109,3 +109,26 @@ def test_disable_does_not_call_bridge_before_enable() -> None:
     robot.connected = True
     robot.disable()
     assert library.disable_calls == 0
+
+
+def test_connect_enables_requested_diagnostics_before_feedback_reads() -> None:
+    class Library:
+        diagnostic_calls: list[int] = []
+
+        @staticmethod
+        def arm_open(config):
+            return 0
+
+        def arm_set_diagnostics(self, enabled):
+            self.diagnostic_calls.append(enabled)
+
+        @staticmethod
+        def arm_close():
+            return None
+
+    library = Library()
+    robot = DyMotorArm(load_robot_config(), diagnostics=True)
+    robot._load_library = lambda: library  # type: ignore[method-assign, return-value]
+    robot.connect()
+    robot.close()
+    assert library.diagnostic_calls == [1]

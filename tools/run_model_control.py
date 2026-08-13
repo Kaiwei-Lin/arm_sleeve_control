@@ -45,6 +45,11 @@ def main() -> int:
     parser.add_argument("--phase3-config", type=Path, default=DEFAULT_PHASE3_CONFIG_PATH)
     parser.add_argument("--phase4-config", type=Path, default=DEFAULT_PHASE4_CONFIG_PATH)
     parser.add_argument("--library", type=Path)
+    parser.add_argument(
+        "--bridge-diagnostics",
+        action="store_true",
+        help="print raw C-side PVCT values during DyMotor reads",
+    )
     args = parser.parse_args()
     if args.duration is not None and args.duration <= 0:
         parser.error("--duration must be positive")
@@ -52,7 +57,7 @@ def main() -> int:
         parser.error("real robot execution requires --sleeve real")
 
     state = RuntimeState.INIT
-    source = controller = None
+    source = controller = robot = shoulder_predictor = None
     invalid = consecutive_errors = stale = cycles = predictions = 0
     try:
         phase3 = load_phase3_config(args.phase3_config)
@@ -63,16 +68,26 @@ def main() -> int:
         elbow_config = phase3.elbow
         if args.sleeve == "fake" and elbow_config.input_min is None:
             elbow_config = replace(elbow_config, input_min=0.0, input_max=2.0)
-        shoulder_predictor = FlexModelPredictor(phase4.flex_model)
-        predictor = ArmMotionPredictor(RuleBasedPredictor(elbow_config), shoulder_predictor)
         watchdog = SensorWatchdog(phase3.sensor_timeout_ms, phase3.hard_timeout_ms)
 
         robot_config = load_robot_config(args.robot_config)
-        robot = FakeRobotArm(robot_config) if args.robot == "fake" else DyMotorArm(robot_config, args.library)
+        robot = (
+            FakeRobotArm(robot_config)
+            if args.robot == "fake"
+            else DyMotorArm(robot_config, args.library, diagnostics=args.bridge_diagnostics)
+        )
         controller = SafeArmController(robot, robot_config)
         controller.connect()
         controller.read_joint_states()
+        if isinstance(robot, DyMotorArm):
+            print(f"loaded_so: {robot.loaded_library_path}")
         state = RuntimeState.ROBOT_READY
+
+        # Keep the vendor SDK load/connect order identical to the proven Phase 1
+        # tools. Model initialization is still completed before Sensor start or
+        # Servo On, so a model failure remains motion-free.
+        shoulder_predictor = FlexModelPredictor(phase4.flex_model)
+        predictor = ArmMotionPredictor(RuleBasedPredictor(elbow_config), shoulder_predictor)
 
         source = FakeSleeveSource() if args.sleeve == "fake" else create_sleeve_source(load_sensor_config(args.sensor_config))
         sync = SensorSynchronizer()
@@ -175,6 +190,8 @@ def main() -> int:
     except Exception as exc:
         state = RuntimeState.FAULT
         print(f"ERROR [{state.name}] {type(exc).__name__}: {exc}", file=sys.stderr)
+        if isinstance(robot, DyMotorArm):
+            print(f"loaded_so: {robot.loaded_library_path}", file=sys.stderr)
         return 1
     finally:
         state = RuntimeState.STOPPING
