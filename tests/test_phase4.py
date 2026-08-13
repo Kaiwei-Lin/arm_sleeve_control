@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 from dataclasses import dataclass, replace
 
 import pytest
@@ -10,6 +11,8 @@ from sleeve_arm.control import ArmMapper, SafeArmController
 from sleeve_arm.domain import ArmAction, SensorSample, SleeveFrame
 from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBasedPredictor
 from sleeve_arm.robot import FakeRobotArm
+from sleeve_arm.sources import FakeSleeveSource
+from tools.calibrate_flex_model import LatestFlexReader
 
 
 def model_config(**changes) -> FlexModelConfig:
@@ -37,6 +40,47 @@ def test_default_real_model_config_rejects_missing_calibration() -> None:
 def test_missing_model_module_has_clear_error() -> None:
     with pytest.raises(RuntimeError, match="Expected module: module_that_does_not_exist"):
         FlexModelPredictor(model_config(model_module="module_that_does_not_exist"))
+
+
+def test_phase4_loads_generated_calibration_file(tmp_path) -> None:
+    calibration = tmp_path / "flex_calibration.json"
+    calibration.write_text(json.dumps({
+        "calibration_baseline": [1, 2, 3],
+        "calibration_scale": [4, 5, 6],
+        "trial_rest": [7, 8, 9],
+    }), encoding="utf-8")
+    config = tmp_path / "phase4.yaml"
+    config.write_text(f"""
+predictor:
+  backend: flex_model
+  model_module: flex_model_0003
+  model_class: FlexPredictor
+  sleeve_channels: [2, 3, 4]
+  calibration_file: {calibration.as_posix()}
+  min_action_confidence: 0.6
+  action_stability: {{required_consecutive_frames: 3}}
+  angle: {{min_deg: 0, max_deg: 90}}
+phase4_validation:
+  limited_motion: true
+  shoulder_flexion_max_delta_deg: 5
+  shoulder_abduction_max_delta_deg: 5
+  max_consecutive_prediction_errors: 3
+""", encoding="utf-8")
+    loaded = load_phase4_config(config)
+    assert loaded.flex_model is not None
+    assert loaded.flex_model.baseline == (1.0, 2.0, 3.0)
+    assert loaded.flex_model.scale == (4.0, 5.0, 6.0)
+    assert loaded.flex_model.trial_rest == (7.0, 8.0, 9.0)
+
+
+def test_latest_flex_reader_returns_ch2_ch3_ch4_in_order() -> None:
+    source = FakeSleeveSource()
+    source.start()
+    try:
+        values = LatestFlexReader(source, (2, 3, 4))()
+    finally:
+        source.close()
+    assert values == pytest.approx([1.0, 2.0, 3.0])
 
 
 @dataclass

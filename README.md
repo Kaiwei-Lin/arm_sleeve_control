@@ -281,13 +281,30 @@ CH2/CH3/CH4 ─→ FlexModelPredictor ─→ action+angle ──┼→ MotionInt
 
 通道严格按 `[CH2, CH3, CH4]` 传给模型，即 `SleeveFrame.channels[1:4]`。模型模块只在 `sleeve_arm/predictor/flex_model.py` 动态导入，`FlexPredictor()` 在 predictor 构造时初始化一次并在每帧复用；项目不复制或修改模型文件。若 pip 包未安装，会明确报告预期模块名，不会回退到假模型或 RuleBasedPredictor。
 
-`configs/phase4.yaml` 中必须填写三组各 3 个有限值：
+每次穿戴袖套后，先运行纯 Flex 快速标定；该工具不会创建或连接 Robot：
+
+```bash
+python tools/calibrate_flex_model.py
+```
+
+它复用 `flex_model_0003` 提供的 `collect_flex_samples()`、`quick_calibrate_flex()` 和 `FlexCalibration.save_json()`，依次采集 3 秒自然下垂基线、12 秒前/侧/后三个完整动作、2 秒 trial rest。输入严格为 `[CH2, CH3, CH4]`。结果默认写入被 `.gitignore` 排除的：
+
+```text
+calibrations/flex_calibration.json
+```
+
+`configs/phase4.yaml` 只引用该文件：
 
 ```yaml
-calibration:
-  baseline: [b1, b2, b3]
-  scale: [s1, s2, s3]
-  trial_rest: [r1, r2, r3]
+calibration_file: calibrations/flex_calibration.json
+```
+
+生成的 JSON 必须包含三组各 3 个有限值：
+
+```yaml
+calibration_baseline: [b1, b2, b3]
+calibration_scale: [s1, s2, s3]
+trial_rest: [r1, r2, r3]
 
 angle:
   min_deg: 0.0
@@ -310,6 +327,12 @@ action 固定映射为 `0=Forward`、`1=Lateral`、`2=Backward`。`angle_deg` �
 模型概率必须至少包含三个 `[0,1]` 有限值；当前 action 对应概率作为 confidence telemetry。`min_action_confidence` 按 Phase 4 约束暂不参与过滤，避免低置信度造成突然回零。新 action 必须连续满足 `required_consecutive_frames` 才切换；候选未稳定时保持上一条已接受肩部 intent。无效 action/概率/角度或模型异常时保持最后安全目标，连续达到配置阈值则 FAULT 并安全退出。IMU 当前不传给模型，保持 Optional，可全部关闭。
 
 严格按以下顺序验证；只有最后一步可能 Servo On：
+
+### 0. 每次穿戴后的快速标定（不连接 Robot）
+
+```bash
+python tools/calibrate_flex_model.py
+```
 
 ### 1. 模型单独测试（不连接 Robot）
 

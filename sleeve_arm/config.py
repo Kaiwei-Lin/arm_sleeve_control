@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -369,12 +370,11 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
     with config_path.open("r", encoding="utf-8") as stream:
         raw = yaml.safe_load(stream)
     predictor = raw.get("predictor") if isinstance(raw, dict) else None
-    calibration = predictor.get("calibration") if isinstance(predictor, dict) else None
     stability = predictor.get("action_stability") if isinstance(predictor, dict) else None
     angle = predictor.get("angle") if isinstance(predictor, dict) else None
     validation = raw.get("phase4_validation") if isinstance(raw, dict) else None
-    if not all(isinstance(item, dict) for item in (predictor, calibration, stability, angle, validation)):
-        raise ValueError("phase4 config requires predictor calibration/stability/angle and phase4_validation")
+    if not all(isinstance(item, dict) for item in (predictor, stability, angle, validation)):
+        raise ValueError("phase4 config requires predictor stability/angle and phase4_validation")
 
     def triple(name: str, values: Any) -> tuple[float, float, float]:
         if not isinstance(values, list) or len(values) != 3 or any(value is None for value in values):
@@ -396,12 +396,30 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
         maximum = angle.get("max_deg")
         if maximum is None:
             raise ValueError("predictor.angle.max_deg must be configured for Phase 4")
+        calibration_value = predictor.get("calibration_file")
+        if not calibration_value:
+            raise ValueError("predictor.calibration_file is required for flex_model")
+        calibration_path = Path(str(calibration_value)).expanduser()
+        if not calibration_path.is_absolute():
+            calibration_path = PROJECT_ROOT / calibration_path
+        try:
+            with calibration_path.resolve().open("r", encoding="utf-8") as stream:
+                calibration = json.load(stream)
+        except FileNotFoundError as exc:
+            raise ValueError(
+                f"Flex calibration file was not found: {calibration_path.resolve()}. "
+                "Run: python tools/calibrate_flex_model.py"
+            ) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"could not read Flex calibration file {calibration_path.resolve()}: {exc}") from exc
+        if not isinstance(calibration, dict):
+            raise ValueError("Flex calibration JSON must contain an object")
         flex_model = FlexModelConfig(
             model_module=str(predictor.get("model_module", "")),
             model_class=str(predictor.get("model_class", "")),
             sleeve_channels=channels,  # type: ignore[arg-type]
-            baseline=triple("baseline", calibration.get("baseline")),
-            scale=triple("scale", calibration.get("scale")),
+            baseline=triple("calibration_baseline", calibration.get("calibration_baseline")),
+            scale=triple("calibration_scale", calibration.get("calibration_scale")),
             trial_rest=triple("trial_rest", calibration.get("trial_rest")),
             min_action_confidence=float(predictor.get("min_action_confidence", 0.6)),
             required_consecutive_frames=int(stability.get("required_consecutive_frames", 3)),
