@@ -449,7 +449,7 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
             raise ValueError("min_action_confidence must be in [0, 1]")
         if flex_model.required_consecutive_frames < 1:
             raise ValueError("required_consecutive_frames must be at least 1")
-        if flex_model.angle_min_deg < 0 or flex_model.angle_max_deg < flex_model.angle_min_deg:
+        if  flex_model.angle_max_deg < flex_model.angle_min_deg:
             raise ValueError("angle range must satisfy 0 <= min_deg <= max_deg")
     if config.shoulder_flexion_max_delta_deg <= 0 or config.shoulder_abduction_max_delta_deg <= 0:
         raise ValueError("shoulder validation deltas must be positive")

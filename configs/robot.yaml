@@ -21,7 +21,7 @@ joints:
     can_id: 2
     direction: -1
     direction_status: NEEDS_HARDWARE_VALIDATION
-    zero_position: null
+    zero_position: 0.038800
     min_position: -1.74
     max_position: 3.5
     max_velocity: null
@@ -35,8 +35,8 @@ joints:
     can_id: 2
     direction: 1
     direction_status: NEEDS_HARDWARE_VALIDATION
-    zero_position: null
-    min_position: null
+    zero_position: 0
+    min_position: -0.087266
     max_position: 3.14
     max_velocity: null
     max_current: null
@@ -49,7 +49,7 @@ joints:
     can_id: 2
     direction: -1
     direction_status: NEEDS_HARDWARE_VALIDATION
-    zero_position: null
+    zero_position: 0
     min_position: -0.17
     max_position: 2.36
     max_velocity: null

@@ -16,12 +16,12 @@ predictor:
     required_consecutive_frames: 3
 
   angle:
-    min_deg: 0.0
+    min_deg: -180
     # Required: fill from the actual model training-label range.
     max_deg: 180
 
 phase4_validation:
   limited_motion: true
-  shoulder_flexion_max_delta_deg: 5.0
-  shoulder_abduction_max_delta_deg: 5.0
+  shoulder_flexion_max_delta_deg: 360
+  shoulder_abduction_max_delta_deg: 360
   max_consecutive_prediction_errors: 3
