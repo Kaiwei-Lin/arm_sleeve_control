@@ -77,11 +77,17 @@ def _configure_library(lib: ctypes.CDLL) -> None:
 class DyMotorArm(RobotArm):
     """ctypes backend exposing semantic joints, not vendor SDK objects."""
 
-    def __init__(self, config: RobotConfig, library_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        config: RobotConfig,
+        library_path: str | Path | None = None,
+        diagnostics: bool = False,
+    ) -> None:
         self.config = config
         self._library_path = Path(library_path).expanduser() if library_path else None
         self._lib: ctypes.CDLL | None = None
         self._loaded_library_path: Path | None = None
+        self._diagnostics = diagnostics
         self.connected = False
         self.enabled = False
 
@@ -107,6 +113,8 @@ class DyMotorArm(RobotArm):
         try:
             self._check(self._lib.arm_open(ctypes.byref(config)), "arm_open")
             self.connected = True
+            if self._diagnostics:
+                self.set_bridge_diagnostics(True)
         except BaseException:
             self._lib.arm_close()
             self.connected = False
