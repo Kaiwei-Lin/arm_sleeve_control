@@ -63,11 +63,18 @@ class FlexModelPredictor(MotionPredictor):
             trial_rest=list(self.config.trial_rest),
         )
         inference_ms = (time.perf_counter() - started) * 1000.0
+        action_value = getattr(result, "action", None)
         try:
-            action_number = operator.index(result.action)
-            raw_action = ArmAction(action_number)
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise ValueError(f"invalid model action: {getattr(result, 'action', None)!r}") from exc
+            if isinstance(action_value, str):
+                raw_action = {
+                    "forward": ArmAction.FORWARD,
+                    "lateral": ArmAction.LATERAL,
+                    "backward": ArmAction.BACKWARD,
+                }[action_value.strip().casefold()]
+            else:
+                raw_action = ArmAction(operator.index(action_value))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid model action: {action_value!r}") from exc
         try:
             probabilities = tuple(float(value) for value in result.action_probabilities)
         except (AttributeError, TypeError, ValueError) as exc:

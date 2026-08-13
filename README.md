@@ -322,7 +322,7 @@ result = model.predict_raw(
 )
 ```
 
-action 固定映射为 `0=Forward`、`1=Lateral`、`2=Backward`。`angle_deg` 先转换为人体语义：Forward → shoulder flexion `+A`，Backward → flexion `-A`，Lateral → abduction `+A`，非当前肩部轴为 neutral。它不会直接发送给电机；Mapper 将人体语义夹到启动反馈附近的肩部 ±5°验证窗口，SafetyController 再执行 Phase 1 的位置、单步、速度、跟踪误差和 PVCT 错误检查。
+action 接受模型的 `Forward`、`Lateral`、`Backward` 标签，也兼容整数 `0`、`1`、`2`，并固定映射为 `0=Forward`、`1=Lateral`、`2=Backward`。`angle_deg` 先转换为人体语义：Forward → shoulder flexion `+A`，Backward → flexion `-A`，Lateral → abduction `+A`，非当前肩部轴为 neutral。它不会直接发送给电机；Mapper 将人体语义夹到启动反馈附近的肩部 ±5°验证窗口，SafetyController 再执行 Phase 1 的位置、单步、速度、跟踪误差和 PVCT 错误检查。
 
 模型概率必须至少包含三个 `[0,1]` 有限值；当前 action 对应概率作为 confidence telemetry。`min_action_confidence` 按 Phase 4 约束暂不参与过滤，避免低置信度造成突然回零。新 action 必须连续满足 `required_consecutive_frames` 才切换；候选未稳定时保持上一条已接受肩部 intent。无效 action/概率/角度或模型异常时保持最后安全目标，连续达到配置阈值则 FAULT 并安全退出。IMU 当前不传给模型，保持 Optional，可全部关闭。
 
