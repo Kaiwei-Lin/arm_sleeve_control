@@ -127,6 +127,19 @@ def test_action_mapping_and_exact_model_inputs(action: int, flexion: float, abdu
     }]
 
 
+@pytest.mark.parametrize(
+    ("label", "action"),
+    (
+        ("Forward", ArmAction.FORWARD),
+        ("Lateral", ArmAction.LATERAL),
+        ("Backward", ArmAction.BACKWARD),
+    ),
+)
+def test_model_string_action_labels(label: str, action: ArmAction) -> None:
+    result = Result(label, (0.7, 0.2, 0.1), 10.0)
+    assert FlexModelPredictor(model_config(), MockModel([result])).predict(sample()).action is action
+
+
 def test_low_confidence_is_recorded_but_not_filtered() -> None:
     model = MockModel([Result(1, (0.49, 0.02, 0.49), 10.0)])
     intent = FlexModelPredictor(model_config(min_action_confidence=0.9), model).predict(sample())
@@ -164,6 +177,7 @@ def test_action_transition_requires_consecutive_frames() -> None:
     "result",
     (
         Result(99, (0.8, 0.1, 0.1), 10.0),
+        Result("unknown", (0.8, 0.1, 0.1), 10.0),
         Result(1.5, (0.8, 0.1, 0.1), 10.0),
         Result(0, (0.8, 0.1), 10.0),
         Result(0, (math.nan, 0.1, 0.1), 10.0),
