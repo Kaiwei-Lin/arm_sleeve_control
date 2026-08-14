@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+import tools.read_wt901pwifi as demo
 from tools.read_wt901pwifi import (
     FRAME_HEADER,
     FRAME_SIZE,
@@ -16,6 +17,7 @@ from tools.read_wt901pwifi import (
     build_argument_parser,
     decode_frame,
     format_frame,
+    run_serial,
     run_tcp_client,
     run_tcp_server,
     run_udp,
@@ -101,6 +103,25 @@ def one_shot_server(endpoint: tuple[str, int], payload: bytes) -> threading.Thre
     return thread
 
 
+class FakeSerial:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+        self.closed = False
+
+    def read(self, size: int) -> bytes:
+        del size
+        return self._chunks.pop(0) if self._chunks else b""
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> FakeSerial:
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
+
 def test_decode_frame_applies_vendor_units() -> None:
     frame = decode_frame(make_frame())
 
@@ -148,6 +169,18 @@ def test_cli_defaults_match_vendor_network_and_serial_defaults() -> None:
     assert serial_args.baudrate == 9600
     assert (udp_args.host, udp_args.port) == ("0.0.0.0", 1399)
     assert (tcp_args.host, tcp_args.port) == ("0.0.0.0", 1399)
+
+
+def test_udp_help_exposes_bind_defaults(capsys) -> None:
+    parser = build_argument_parser()
+
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args(["udp", "--help"])
+
+    assert exit_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "default: 0.0.0.0" in help_text
+    assert "default: 1399" in help_text
 
 
 def test_json_output_contains_all_measurement_groups() -> None:
@@ -210,3 +243,51 @@ def test_tcp_client_runner_decodes_test_server(free_tcp_port: int) -> None:
     server.join(timeout=2.0)
     assert not server.is_alive()
     assert [frame.device_id for frame in received] == ["00001234"]
+
+
+def test_serial_runner_uses_9600_8n1_and_decodes_frame() -> None:
+    calls: list[dict[str, object]] = []
+    raw = make_frame()
+    fake = FakeSerial([raw[:20], raw[20:]])
+
+    def factory(**kwargs: object) -> FakeSerial:
+        calls.append(kwargs)
+        return fake
+
+    received: list[WT901PFrame] = []
+    run_serial(
+        "COM5",
+        9600,
+        received.append,
+        stop_after=1,
+        serial_factory=factory,
+        serial_constants=(8, "N", 1),
+    )
+
+    assert calls == [
+        {
+            "port": "COM5",
+            "baudrate": 9600,
+            "timeout": 0.2,
+            "bytesize": 8,
+            "parity": "N",
+            "stopbits": 1,
+        }
+    ]
+    assert [frame.device_id for frame in received] == ["00001234"]
+    assert fake.closed
+
+
+def test_main_dispatches_selected_transport(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        demo,
+        "run_udp",
+        lambda host, port, emit, stop_after=None: emit(decode_frame(make_frame())),
+    )
+
+    result = demo.main(
+        ["--json", "udp", "--host", "127.0.0.1", "--port", "1399"]
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["device_id"] == "00001234"

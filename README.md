@@ -66,6 +66,31 @@ python tools/read_imu.py --imu imu1 --fake
 python tools/test_sensor_sync.py --fake
 ```
 
+### WT901PWIFI 独立实时读取 Demo
+
+`tools/read_wt901pwifi.py` 是独立工具，不接入上述 IMU770 Source，也不会连接 WiFi、修改 WiFi 账号/密码、配置设备 IP 或写传感器寄存器。请先手动完成电脑联网和传感器端参数设置，再将对应地址和端口传给脚本。
+
+已按厂家规格和协议实现固定 54 字节 `WT55...0D0A` 数据帧，可输出设备 ID、片上时间、三轴加速度/角速度/磁场、Roll/Pitch/Yaw、温度、电池电压、RSSI 和版本号。串口默认参数为 9600/8N1；传感器出厂网络模式为 AP + UDP，默认远端计算机地址/端口为 `192.168.4.2:1399`。
+
+```bash
+# Type-C 串口；Windows 示例
+python tools/read_wt901pwifi.py serial --port COM5
+
+# UDP：在电脑本地监听传感器发送的数据
+python tools/read_wt901pwifi.py udp --host 0.0.0.0 --port 1399
+
+# TCP 服务端：等待手动配置为 TCP 客户端的传感器连接电脑
+python tools/read_wt901pwifi.py tcp-server --host 0.0.0.0 --port 1399
+
+# TCP 客户端：仅用于手动配置成监听端点的传感器
+python tools/read_wt901pwifi.py tcp-client --host 192.168.4.1 --port 9250
+
+# 每帧输出一个 JSON 对象，便于管道处理
+python tools/read_wt901pwifi.py --json udp --host 0.0.0.0 --port 1399
+```
+
+TCP/UDP 的 `--host`、`--port` 都可按手动配置修改。Windows 首次监听入站 UDP/TCP 时，可能需要在防火墙提示中允许当前 Python 解释器访问对应网络。按 `Ctrl+C` 可安全关闭串口或 socket。
+
 记录真实已启用传感器，或短时 fake 数据：
 
 ```bash
