@@ -3,13 +3,16 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from sleeve_arm.config import FlexModelConfig, load_phase3_config, load_phase4_config, load_robot_config
 from sleeve_arm.control import ArmMapper, SafeArmController
 from sleeve_arm.domain import ArmAction, MotionIntent, SensorSample, SleeveFrame
 from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBasedPredictor
+from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibration_samples
 from sleeve_arm.robot import FakeRobotArm
 from sleeve_arm.sources import FakeSleeveSource
 from tools.calibrate_flex_model import LatestFlexReader
@@ -106,6 +109,106 @@ def test_motion_intent_rejects_non_boolean_moving() -> None:
 def test_motion_intent_rejects_unknown_model_action_label() -> None:
     with pytest.raises(ValueError, match="model_action"):
         MotionIntent(timestamp=1.0, model_action="Turning")
+
+
+class SequenceSleeveSource:
+    def __init__(self, frames) -> None:
+        self.frames = iter(frames)
+
+    def latest(self):
+        return next(self.frames, None)
+
+
+class SequenceClock:
+    def __init__(self, values: list[float]) -> None:
+        self.values = iter(values)
+
+    def __call__(self) -> float:
+        return next(self.values)
+
+
+def test_collect_calibration_samples_uses_fresh_ch3_ch4_ch5() -> None:
+    source = SequenceSleeveSource([
+        SleeveFrame(1.0, (10, 20, 30, 40, 50)),
+        SleeveFrame(2.0, (11, 21, 31, 41, 51)),
+    ])
+    rows = collect_calibration_samples(
+        source,
+        (3, 4, 5),
+        1.0,
+        monotonic=SequenceClock([0.0, 0.1, 0.2, 1.0]),
+    )
+    assert rows.tolist() == [[30.0, 40.0, 50.0], [31.0, 41.0, 51.0]]
+
+
+def test_collect_calibration_samples_skips_duplicate_and_invalid_frames() -> None:
+    source = SequenceSleeveSource([
+        SleeveFrame(1.0, (10, 20, 30, 40, 50)),
+        SleeveFrame(1.0, (11, 21, 31, 41, 51)),
+        SimpleNamespace(timestamp=2.0, channels=(10, 20, math.nan, 40, 50)),
+        SleeveFrame(3.0, (12, 22, 32, 42, 52)),
+    ])
+    rows = collect_calibration_samples(
+        source,
+        (3, 4, 5),
+        1.0,
+        monotonic=SequenceClock([0.0, 0.1, 0.2, 0.3, 0.4, 1.0]),
+    )
+    assert rows.tolist() == [[30.0, 40.0, 50.0], [32.0, 42.0, 52.0]]
+
+
+def test_collect_calibration_samples_requires_two_valid_rows() -> None:
+    source = SequenceSleeveSource([SleeveFrame(1.0, (10, 20, 30, 40, 50))])
+    with pytest.raises(RuntimeError, match="only 1 valid samples"):
+        collect_calibration_samples(
+            source,
+            (3, 4, 5),
+            1.0,
+            monotonic=SequenceClock([0.0, 0.1, 1.0]),
+        )
+
+
+def test_collect_calibration_samples_rejects_missing_channels() -> None:
+    source = SequenceSleeveSource([
+        SleeveFrame(1.0, (10, 20, 30, 40)),
+        SleeveFrame(2.0, (11, 21, 31, 41)),
+    ])
+    with pytest.raises(RuntimeError, match="only 0 valid samples"):
+        collect_calibration_samples(
+            source,
+            (3, 4, 5),
+            1.0,
+            monotonic=SequenceClock([0.0, 0.1, 0.2, 1.0]),
+        )
+
+
+def test_calibrate_estimator_saves_then_resets(tmp_path: Path) -> None:
+    events: list[object] = []
+
+    class Calibration:
+        def save(self, path: Path) -> None:
+            events.append(("save", path))
+
+    class Estimator:
+        def calibrate(self, rows: np.ndarray):
+            events.append(("calibrate", rows.tolist()))
+            return Calibration()
+
+        def reset(self) -> None:
+            events.append("reset")
+
+    output = tmp_path / "calibration.json"
+    calibration = calibrate_estimator(
+        Estimator(),
+        np.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        output,
+    )
+    assert isinstance(calibration, Calibration)
+    assert events == [
+        ("calibrate", [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        ("save", output),
+        "reset",
+    ]
 
 
 def test_latest_flex_reader_returns_ch2_ch3_ch4_in_order() -> None:
