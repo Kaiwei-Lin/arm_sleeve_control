@@ -94,7 +94,7 @@ configuration:
 ```yaml
 predictor:
   backend: flexarm_estimator
-  model_dir: ../arm_data_collector/flexarm_estimator/models
+  model_dir: ../../arm_data_collector/flexarm_estimator/models
   sleeve_channels: [3, 4, 5]
   calibration_file: calibrations/flexarm_live_calibration.json
   calibration_seconds: 3.0
@@ -285,4 +285,3 @@ and the staged hardware validation sequence.
 
 No trained model binaries, runtime calibration files, recordings, IDE files,
 or adjacent-project source trees are committed to this repository.
-
