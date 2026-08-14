@@ -2,7 +2,7 @@ predictor:
   backend: flexarm_estimator
 
   # FlexArmEstimator artifacts are external to this control repository.
-  model_dir: E:/PythonProject/electronic_skin_project/袖套控制/arm_data_collector/flexarm_estimator/models
+  model_dir: /home/user/sleeve_arm_control/flexarm_estimator/models
 
   # Human-facing 1-based fields used by the trained model.
   sleeve_channels: [3, 4, 5]

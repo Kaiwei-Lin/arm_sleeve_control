@@ -5,3 +5,5 @@ __pycache__/
 recordings/
 calibrations/*.json
 .worktrees/
+flexarm_estimator/
+.idea/
