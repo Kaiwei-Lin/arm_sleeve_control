@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import struct
 
 import pytest
@@ -8,7 +9,9 @@ from tools.read_wt901pwifi import (
     FRAME_HEADER,
     FRAME_SIZE,
     WT901PStreamParser,
+    build_argument_parser,
     decode_frame,
+    format_frame,
 )
 
 
@@ -80,3 +83,30 @@ def test_stream_parser_recovers_from_noise_and_bad_terminator() -> None:
     assert len(frames) == 1
     assert frames[0].device_id == "00001234"
     assert parser.invalid_frames >= 1
+
+
+def test_cli_defaults_match_vendor_network_and_serial_defaults() -> None:
+    parser = build_argument_parser()
+
+    serial_args = parser.parse_args(["serial", "--port", "COM5"])
+    udp_args = parser.parse_args(["udp"])
+    tcp_args = parser.parse_args(["tcp-server"])
+
+    assert serial_args.baudrate == 9600
+    assert (udp_args.host, udp_args.port) == ("0.0.0.0", 1399)
+    assert (tcp_args.host, tcp_args.port) == ("0.0.0.0", 1399)
+
+
+def test_json_output_contains_all_measurement_groups() -> None:
+    payload = json.loads(format_frame(decode_frame(make_frame()), json_output=True))
+
+    assert payload["device_id"] == "00001234"
+    assert payload["device_time"] == "2026-08-14T12:34:56.789"
+    assert payload["accel_g"] == pytest.approx([1.0, -2.0, 8.0])
+    assert payload["gyro_dps"][0] == pytest.approx(10.009765625)
+    assert payload["mag_ut"] == pytest.approx([100.0, -50.0, 25.0])
+    assert payload["euler_deg"] == pytest.approx([90.0, -45.0, 22.5])
+    assert payload["temperature_c"] == pytest.approx(25.34)
+    assert payload["battery_v"] == pytest.approx(3.87)
+    assert payload["rssi_dbm"] == -42
+    assert payload["version"] == 0x1234

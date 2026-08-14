@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+import json
 import struct
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 
@@ -99,3 +101,58 @@ class WT901PStreamParser:
 
             del self._buffer[:FRAME_SIZE]
             frames.append(frame)
+
+
+def frame_to_dict(frame: WT901PFrame) -> dict[str, object]:
+    result = asdict(frame)
+    result["device_time"] = frame.device_time.isoformat(timespec="milliseconds")
+    return result
+
+
+def format_frame(frame: WT901PFrame, json_output: bool) -> str:
+    if json_output:
+        return json.dumps(frame_to_dict(frame), ensure_ascii=False, separators=(",", ":"))
+
+    ax, ay, az = frame.accel_g
+    gx, gy, gz = frame.gyro_dps
+    mx, my, mz = frame.mag_ut
+    roll, pitch, yaw = frame.euler_deg
+    return (
+        f"id={frame.device_id} "
+        f"time={frame.device_time.isoformat(timespec='milliseconds')} "
+        f"accel_g=({ax:.4f},{ay:.4f},{az:.4f}) "
+        f"gyro_dps=({gx:.3f},{gy:.3f},{gz:.3f}) "
+        f"mag_ut=({mx:.3f},{my:.3f},{mz:.3f}) "
+        f"rpy_deg=({roll:.3f},{pitch:.3f},{yaw:.3f}) "
+        f"temp_c={frame.temperature_c:.2f} "
+        f"battery_v={frame.battery_v:.2f} "
+        f"rssi_dbm={frame.rssi_dbm} "
+        f"version={frame.version}"
+    )
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Read WT901PWIFI real-time data without configuring the sensor or WiFi."
+    )
+    parser.add_argument("--json", action="store_true", help="emit one JSON object per frame")
+    subparsers = parser.add_subparsers(dest="transport", required=True)
+
+    serial_parser = subparsers.add_parser("serial", help="read the Type-C UART stream")
+    serial_parser.add_argument("--port", required=True, help="serial port, for example COM5")
+    serial_parser.add_argument("--baudrate", type=int, default=9600)
+
+    for name, help_text in (
+        ("udp", "listen for UDP datagrams from the sensor"),
+        ("tcp-server", "listen for a TCP connection from the sensor"),
+    ):
+        network_parser = subparsers.add_parser(name, help=help_text)
+        network_parser.add_argument("--host", default="0.0.0.0", help="local bind address")
+        network_parser.add_argument("--port", type=int, default=1399, help="local bind port")
+
+    tcp_client = subparsers.add_parser(
+        "tcp-client", help="connect to a manually configured sensor TCP endpoint"
+    )
+    tcp_client.add_argument("--host", required=True, help="sensor IP address")
+    tcp_client.add_argument("--port", required=True, type=int, help="sensor TCP port")
+    return parser
