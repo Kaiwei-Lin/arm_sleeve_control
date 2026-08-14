@@ -302,6 +302,7 @@ class SampleSynchronizer:
         self._upper: deque[Imu770Sample] = deque(maxlen=max_queue)
         self._forearm: deque[Imu770Sample] = deque(maxlen=max_queue)
         self._lock = threading.Lock()
+        self._minimum_timestamp_ns: int | None = None
         self.rejected_samples = 0
 
     def add_upper(self, sample: Imu770Sample) -> None:
@@ -313,12 +314,25 @@ class SampleSynchronizer:
             self._append(self._forearm, sample)
 
     def _append(self, queue: deque[Imu770Sample], sample: Imu770Sample) -> None:
+        if self._minimum_timestamp_ns is not None and sample.host_timestamp_ns < self._minimum_timestamp_ns:
+            self.rejected_samples += 1
+            return
         if len(queue) == queue.maxlen:
             self.rejected_samples += 1
         queue.append(sample)
 
     def clear(self) -> int:
         with self._lock:
+            discarded = len(self._upper) + len(self._forearm)
+            self._upper.clear()
+            self._forearm.clear()
+            return discarded
+
+    def discard_before(self, timestamp_ns: int) -> int:
+        if timestamp_ns < 0:
+            raise ValueError("timestamp_ns must be nonnegative")
+        with self._lock:
+            self._minimum_timestamp_ns = int(timestamp_ns)
             discarded = len(self._upper) + len(self._forearm)
             self._upper.clear()
             self._forearm.clear()
@@ -662,7 +676,7 @@ def run(
             time.sleep(0.005)
 
         input_fn("Hold the aligned zero pose still, then press Enter to calibrate...")
-        pre_calibration_discarded = synchronizer.clear()
+        pre_calibration_discarded = synchronizer.discard_before(time.monotonic_ns())
         print(f"Calibrating for {args.calibration_seconds:.2f} s; keep both IMUs still...")
         calibration_pairs: list[tuple[np.ndarray, np.ndarray]] = []
         calibration_deadline = time.monotonic() + args.calibration_seconds
@@ -740,6 +754,8 @@ def run(
         print(
             f"Summary: upper_valid={upper_stats.valid_frames}, forearm_valid={forearm_stats.valid_frames}, "
             f"sync_rejected={synchronizer.rejected_samples}, "
+            f"checksum=({upper_stats.checksum_errors},{forearm_stats.checksum_errors}), "
+            f"malformed=({upper_stats.parser_errors},{forearm_stats.parser_errors}), "
             f"tid_drops=({upper_stats.tid_drops},{forearm_stats.tid_drops}), "
             f"tid_resets=({upper_stats.tid_resets},{forearm_stats.tid_resets}), "
             f"invalid_quaternion=({upper_stats.invalid_quaternions},{forearm_stats.invalid_quaternions})"

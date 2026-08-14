@@ -304,6 +304,22 @@ def test_synchronizer_clear_discards_precalibration_backlog() -> None:
     assert synchronizer.rejected_samples == 0
 
 
+def test_synchronizer_rejects_inflight_sample_older_than_calibration_cutoff() -> None:
+    synchronizer = demo.SampleSynchronizer(max_gap_ns=20_000_000)
+    synchronizer.add_upper(sample_at(100_000_000, 1))
+    synchronizer.add_forearm(sample_at(100_000_000, 2))
+
+    assert synchronizer.discard_before(200_000_000) == 2
+    synchronizer.add_upper(sample_at(150_000_000, 3))
+    synchronizer.add_forearm(sample_at(150_000_000, 4))
+    synchronizer.add_upper(sample_at(210_000_000, 5))
+    synchronizer.add_forearm(sample_at(212_000_000, 6))
+
+    upper, forearm, gap_ns = synchronizer.pop_pair()  # type: ignore[misc]
+    assert (upper.tid, forearm.tid, gap_ns) == (5, 6, 2_000_000)
+    assert synchronizer.rejected_samples == 2
+
+
 class FakeSerial:
     def __init__(self, chunks: list[bytes] | None = None, read_error: BaseException | None = None) -> None:
         self.chunks = deque(chunks or [])
@@ -502,6 +518,9 @@ def test_run_calibrates_records_live_pairs_and_closes_both_ports(tmp_path: objec
     assert "checksum=" in captured.out
     assert "malformed=" in captured.out
     assert "invalid_quaternion=" in captured.out
+    summary = next(line for line in captured.out.splitlines() if line.startswith("Summary:"))
+    assert "checksum=" in summary
+    assert "malformed=" in summary
     assert "test stream ended" in captured.err
 
 
