@@ -34,7 +34,6 @@ typedef struct ArmOpenConfig {
 
 /* All functions return 0 on success and a negative value on failure. */
 ARM_API int arm_open(const ArmOpenConfig *config);
-ARM_API int arm_prepare_feedback(void);
 ARM_API int arm_enable(void);
 ARM_API int arm_disable(void);
 ARM_API int arm_get_joint_state(

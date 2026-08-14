@@ -29,7 +29,6 @@ def test_explicit_pvct_pointer_types() -> None:
 
     class Library:
         arm_open = Function()
-        arm_prepare_feedback = Function()
         arm_enable = Function()
         arm_disable = Function()
         arm_get_joint_state = Function()
@@ -49,24 +48,6 @@ def test_explicit_pvct_pointer_types() -> None:
         uint32_pointer, uint32_pointer, uint32_pointer,
     ]
     assert library.arm_get_joint_state.restype is ctypes.c_int
-
-
-def test_prepare_feedback_uses_explicit_bridge_operation() -> None:
-    class Library:
-        calls = 0
-
-        def arm_prepare_feedback(self):
-            self.calls += 1
-            return 0
-
-    robot = DyMotorArm(load_robot_config())
-    library = Library()
-    robot._lib = library  # type: ignore[assignment]
-    robot.connected = True
-
-    robot.prepare_feedback()
-
-    assert library.calls == 1
 
 
 def test_wrapper_status_and_motor_error_are_separate() -> None:

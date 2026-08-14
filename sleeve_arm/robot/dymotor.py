@@ -50,8 +50,6 @@ class BridgeJointState:
 def _configure_library(lib: ctypes.CDLL) -> None:
     lib.arm_open.argtypes = [ctypes.POINTER(_ArmOpenConfig)]
     lib.arm_open.restype = ctypes.c_int
-    lib.arm_prepare_feedback.argtypes = []
-    lib.arm_prepare_feedback.restype = ctypes.c_int
     lib.arm_enable.argtypes = []
     lib.arm_enable.restype = ctypes.c_int
     lib.arm_disable.argtypes = []
@@ -133,10 +131,6 @@ class DyMotorArm(RobotArm):
         lib = self._require_connected()
         self._check(lib.arm_enable(), "arm_enable")
         self.enabled = True
-
-    def prepare_feedback(self) -> None:
-        lib = self._require_connected()
-        self._check(lib.arm_prepare_feedback(), "arm_prepare_feedback")
 
     def disable(self) -> None:
         if self._lib is None or not self.connected or not self.enabled:

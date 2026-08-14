@@ -20,11 +20,6 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=0.5)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--library", type=Path, help="exact libdymotor_bridge.so to load")
-    parser.add_argument(
-        "--initialize-board",
-        action="store_true",
-        help="explicitly Servo Off and initialize the mainboard state for PVCT; never Servo On or move",
-    )
     args = parser.parse_args()
     if args.samples < 1 or args.interval < 0:
         parser.error("--samples must be >= 1 and --interval must be >= 0")
@@ -33,8 +28,6 @@ def main() -> int:
     robot = DyMotorArm(config, args.library)
     try:
         robot.connect()
-        if args.initialize_board:
-            robot.prepare_feedback()
         robot.set_bridge_diagnostics(True)
         print(f"loaded_so: {robot.loaded_library_path}")
         names = JOINT_NAMES if args.joint == "all" else (args.joint,)

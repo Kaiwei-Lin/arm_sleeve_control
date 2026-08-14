@@ -24,7 +24,6 @@
 typedef struct ArmSession {
     RobotCtx *ctx;
     RobotMotor *motors[ARM_JOINT_COUNT];
-    int fast_mode;
     int open;
     int enabled;
 } ArmSession;
@@ -150,6 +149,72 @@ static int validate_open_config(const ArmOpenConfig *config)
     return 0;
 }
 
+static int discover_required_motors(const ArmOpenConfig *config)
+{
+    RobotMotorListHandle list = NULL;
+    MotorArray array;
+    int matches[ARM_JOINT_COUNT] = {0};
+    int i;
+    int joint;
+    int object_list_created = 0;
+    int result = 0;
+
+    memset(&array, 0, sizeof(array));
+    list = motorlist_create();
+    if (list == NULL) {
+        return fail(-3, "motorlist_create failed");
+    }
+    if (!get_robot_motorlist(g_arm.ctx, list)) {
+        result = fail(-3, "get_robot_motorlist failed");
+        goto done;
+    }
+
+    robot_create_motorObjectList(g_arm.ctx, list, &array);
+    object_list_created = 1;
+    if (array.count < 0 || array.count > 16) {
+        result = fail(-3, "SDK returned invalid motor count: %d", array.count);
+        if (array.count < 0) {
+            array.count = 0;
+        } else {
+            array.count = 16;
+        }
+        goto done;
+    }
+    for (i = 0; i < array.count; ++i) {
+        unsigned short motor_id = 0;
+        unsigned short can_id = 0;
+        if (array.robotmotors[i] == NULL) {
+            result = fail(-3, "SDK returned a null motor in the discovery list");
+            goto done;
+        }
+        robot_motor_get_motor_id(array.robotmotors[i], &motor_id, &can_id);
+        for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
+            if (motor_id == config->motor_ids[joint] && can_id == config->can_ids[joint]) {
+                ++matches[joint];
+            }
+        }
+    }
+    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
+        if (matches[joint] != 1) {
+            result = fail(
+                -3,
+                "required motor id=%u CAN=%u was discovered %d time(s)",
+                (unsigned)config->motor_ids[joint],
+                (unsigned)config->can_ids[joint],
+                matches[joint]
+            );
+            goto done;
+        }
+    }
+
+done:
+    if (object_list_created) {
+        motorObjectlist_destroy(g_arm.ctx, &array);
+    }
+    motorlist_destroy(list);
+    return result;
+}
+
 int arm_open(const ArmOpenConfig *config)
 {
     int joint;
@@ -179,14 +244,16 @@ int arm_open(const ArmOpenConfig *config)
         return -2;
     }
 
-    /* Match the vendor examples exactly: configure fast feedback immediately
-       after the network connection, before creating any motor objects. */
+    result = discover_required_motors(config);
+    if (result != 0) {
+        release_session(0);
+        return result;
+    }
     if (!robot_set_fast_mode(g_arm.ctx, config->fast_mode)) {
         fail(-2, "robot_set_fast_mode failed");
         release_session(0);
         return -2;
     }
-    g_arm.fast_mode = config->fast_mode;
 
     for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
         g_arm.motors[joint] = robot_create_motor(
@@ -277,18 +344,7 @@ static int read_joint_feedback(int joint, JointFeedback *feedback)
     }
     if (!isfinite(sdk_position) || !isfinite(sdk_velocity) || !isfinite(sdk_torque) ||
         sdk_bus == 0U) {
-        return fail(
-            -4,
-            "PVCT feedback is unavailable or invalid for joint %d "
-            "(position=%.9g velocity=%.9g torque=%.9g state=%u bus=%u error=%u)",
-            joint,
-            (double)sdk_position,
-            (double)sdk_velocity,
-            (double)sdk_torque,
-            sdk_state,
-            sdk_bus,
-            sdk_error
-        );
+        return fail(-4, "PVCT feedback is unavailable or invalid for joint %d", joint);
     }
     return 0;
 }
@@ -320,34 +376,6 @@ int arm_get_joint_state(
     *bus = feedback.bus;
     *error = feedback.error;
     return status;
-}
-
-int arm_prepare_feedback(void)
-{
-    if (!g_arm.open) {
-        return fail(-2, "arm is not open");
-    }
-    if (g_arm.enabled) {
-        return fail(-5, "cannot prepare feedback while motors are enabled");
-    }
-
-    /* PVCTFast starts only after the mainboard state transition on a fresh
-       session. Keep every motor explicitly disabled across that transition;
-       do not set a mode, target position, or Servo On here. */
-    /* A fresh mainboard session may not accept motor commands yet. The 0x80
-       transition is the vendor's MIT-disable state; only enter state 1 after
-       Servo Off succeeds there. */
-    (void)servo_off_all();
-    robot_StateMachine(g_arm.ctx, 0x80);
-    if (servo_off_all() != 0) {
-        return fail(-6, "Servo Off failed in the disabled mainboard state");
-    }
-    robot_StateMachine(g_arm.ctx, 1);
-    if (servo_off_all() != 0) {
-        return fail(-6, "Servo Off failed after feedback initialization");
-    }
-    wait_for_fast_feedback(g_arm.fast_mode);
-    return 0;
 }
 
 void arm_set_diagnostics(int enabled)

@@ -28,9 +28,6 @@ class FakeRobotArm(RobotArm):
         self.closed = False
         self.events.append("connect")
 
-    def prepare_feedback(self) -> None:
-        self._require_connected()
-
     def enable(self) -> None:
         self._require_connected()
         if any(self._errors.values()):

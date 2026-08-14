@@ -103,7 +103,7 @@ python tools/record_sensors.py --fake --duration 2
 
 - `robot_create` + `robot_config_net` 创建并连接主板上下文。
 - 厂家位置示例在 motor object 建立后执行主板状态机 `0x80 → 1`，但实机已确认该调用不适合放在只读连接路径；bridge 的 `arm_open` 不执行状态机、Servo 或位置命令。
-- bridge 按配置直接创建 22/CAN2、23/CAN2、25/CAN2、24/CAN2 的 motor objects，避免在同一 SDK 会话中先创建/销毁枚举对象再重复创建控制对象。Servo On 前必须从四个对象分别取得稳定、有效且无错误的 PVCT，因此缺失电机仍会安全失败。
+- `get_robot_motorlist` + `robot_create_motorObjectList` 枚举电机；bridge 要求 22/CAN2、23/CAN2、25/CAN2、24/CAN2 各精确出现一次。
 - `robot_motor_get_PVCTFast` 提供 position、velocity、estimated torque、state 和 error 等缓存反馈。
 - `robot_motor_set_control_mode(..., MOTOR_CTRL_MODE_POSITION)` 切换位置模式，`CTRL_SERVO_ON/OFF` 控制使能。
 - `robot_motor_set_position` 暂存每台电机目标，`robot_motor_set_big_pose` 一次发送已注册电机的大包；三关节控制复用此 batch 路径。

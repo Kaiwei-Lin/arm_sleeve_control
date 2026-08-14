@@ -392,8 +392,8 @@ def test_manual_backward_model_output_uses_absolute_joint_semantics() -> None:
 
 def test_robot_connect_precedes_sensor_and_external_model_initialization() -> None:
     runtime = inspect.getsource(run_model_control.main)
-    assert runtime.index("controller.connect(") < runtime.index("source.start()")
-    assert runtime.index("controller.connect(") < runtime.index("prepare_flexarm_predictor(")
+    assert runtime.index("controller.connect()") < runtime.index("source.start()")
+    assert runtime.index("controller.connect()") < runtime.index("prepare_flexarm_predictor(")
 
 
 def test_model_instance_is_reused_across_predictions() -> None:
