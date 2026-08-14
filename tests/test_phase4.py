@@ -78,6 +78,36 @@ def test_phase4_rejects_non_positive_calibration_duration(tmp_path: Path) -> Non
         load_phase4_config(config)
 
 
+def test_motion_intent_preserves_flexarm_diagnostics() -> None:
+    intent = MotionIntent(
+        timestamp=1.0,
+        model_action="Rest",
+        angle_confidence=0.75,
+        moving=False,
+    )
+    assert (intent.model_action, intent.angle_confidence, intent.moving) == (
+        "Rest",
+        0.75,
+        False,
+    )
+
+
+@pytest.mark.parametrize("value", (-0.1, 1.1, math.nan))
+def test_motion_intent_rejects_invalid_angle_confidence(value: float) -> None:
+    with pytest.raises(ValueError, match="angle_confidence"):
+        MotionIntent(timestamp=1.0, angle_confidence=value)
+
+
+def test_motion_intent_rejects_non_boolean_moving() -> None:
+    with pytest.raises(ValueError, match="moving"):
+        MotionIntent(timestamp=1.0, moving=1)
+
+
+def test_motion_intent_rejects_unknown_model_action_label() -> None:
+    with pytest.raises(ValueError, match="model_action"):
+        MotionIntent(timestamp=1.0, model_action="Turning")
+
+
 def test_latest_flex_reader_returns_ch2_ch3_ch4_in_order() -> None:
     source = FakeSleeveSource()
     source.start()
