@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import json
+import socket
 import struct
+import threading
+import time
 
 import pytest
 
 from tools.read_wt901pwifi import (
     FRAME_HEADER,
     FRAME_SIZE,
+    WT901PFrame,
     WT901PStreamParser,
     build_argument_parser,
     decode_frame,
     format_frame,
+    run_tcp_client,
+    run_tcp_server,
+    run_udp,
 )
 
 
@@ -46,6 +53,52 @@ def make_frame(
     raw.extend(b"\r\n")
     assert len(raw) == FRAME_SIZE
     return bytes(raw)
+
+
+@pytest.fixture
+def free_udp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.fixture
+def free_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def connect_with_retry(endpoint: tuple[str, int], payload: bytes) -> None:
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            with socket.create_connection(endpoint, timeout=0.2) as connection:
+                connection.sendall(payload)
+            return
+        except ConnectionRefusedError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
+def one_shot_server(endpoint: tuple[str, int], payload: bytes) -> threading.Thread:
+    ready = threading.Event()
+
+    def serve() -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(endpoint)
+            listener.listen(1)
+            ready.set()
+            connection, _ = listener.accept()
+            with connection:
+                connection.sendall(payload)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    assert ready.wait(timeout=2.0)
+    return thread
 
 
 def test_decode_frame_applies_vendor_units() -> None:
@@ -110,3 +163,50 @@ def test_json_output_contains_all_measurement_groups() -> None:
     assert payload["battery_v"] == pytest.approx(3.87)
     assert payload["rssi_dbm"] == -42
     assert payload["version"] == 0x1234
+
+
+def test_udp_runner_decodes_loopback_datagram(free_udp_port: int) -> None:
+    received: list[WT901PFrame] = []
+    thread = threading.Thread(
+        target=run_udp,
+        args=("127.0.0.1", free_udp_port, received.append),
+        kwargs={"stop_after": 1},
+    )
+    thread.start()
+
+    deadline = time.monotonic() + 2.0
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+        while thread.is_alive() and not received and time.monotonic() < deadline:
+            sender.sendto(make_frame(), ("127.0.0.1", free_udp_port))
+            time.sleep(0.01)
+
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert [frame.device_id for frame in received] == ["00001234"]
+
+
+def test_tcp_server_runner_decodes_loopback_stream(free_tcp_port: int) -> None:
+    received: list[WT901PFrame] = []
+    thread = threading.Thread(
+        target=run_tcp_server,
+        args=("127.0.0.1", free_tcp_port, received.append),
+        kwargs={"stop_after": 1},
+    )
+    thread.start()
+
+    connect_with_retry(("127.0.0.1", free_tcp_port), make_frame())
+
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert [frame.device_id for frame in received] == ["00001234"]
+
+
+def test_tcp_client_runner_decodes_test_server(free_tcp_port: int) -> None:
+    server = one_shot_server(("127.0.0.1", free_tcp_port), make_frame())
+    received: list[WT901PFrame] = []
+
+    run_tcp_client("127.0.0.1", free_tcp_port, received.append, stop_after=1)
+
+    server.join(timeout=2.0)
+    assert not server.is_alive()
+    assert [frame.device_id for frame in received] == ["00001234"]

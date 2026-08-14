@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import struct
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from typing import Callable
 
 
 FRAME_HEADER = b"WT55"
@@ -156,3 +158,93 @@ def build_argument_parser() -> argparse.ArgumentParser:
     tcp_client.add_argument("--host", required=True, help="sensor IP address")
     tcp_client.add_argument("--port", required=True, type=int, help="sensor TCP port")
     return parser
+
+
+FrameEmitter = Callable[[WT901PFrame], None]
+
+
+def _process_chunk(
+    parser: WT901PStreamParser,
+    chunk: bytes,
+    emit: FrameEmitter,
+    remaining: int | None,
+) -> int | None:
+    for frame in parser.feed(chunk):
+        emit(frame)
+        if remaining is not None:
+            remaining -= 1
+            if remaining <= 0:
+                return 0
+    return remaining
+
+
+def run_udp(
+    host: str,
+    port: int,
+    emit: FrameEmitter,
+    stop_after: int | None = None,
+) -> None:
+    parser = WT901PStreamParser()
+    remaining = stop_after
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+        receiver.bind((host, port))
+        receiver.settimeout(0.2)
+        while remaining != 0:
+            try:
+                chunk, _ = receiver.recvfrom(65535)
+            except socket.timeout:
+                continue
+            remaining = _process_chunk(parser, chunk, emit, remaining)
+
+
+def run_tcp_server(
+    host: str,
+    port: int,
+    emit: FrameEmitter,
+    stop_after: int | None = None,
+) -> None:
+    parser = WT901PStreamParser()
+    remaining = stop_after
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((host, port))
+        listener.listen(1)
+        listener.settimeout(0.2)
+
+        while remaining != 0:
+            try:
+                connection, _ = listener.accept()
+            except socket.timeout:
+                continue
+            with connection:
+                connection.settimeout(0.2)
+                while remaining != 0:
+                    try:
+                        chunk = connection.recv(4096)
+                    except socket.timeout:
+                        continue
+                    except ConnectionResetError:
+                        break
+                    if not chunk:
+                        break
+                    remaining = _process_chunk(parser, chunk, emit, remaining)
+
+
+def run_tcp_client(
+    host: str,
+    port: int,
+    emit: FrameEmitter,
+    stop_after: int | None = None,
+) -> None:
+    parser = WT901PStreamParser()
+    remaining = stop_after
+    with socket.create_connection((host, port), timeout=3.0) as connection:
+        connection.settimeout(0.2)
+        while remaining != 0:
+            try:
+                chunk = connection.recv(4096)
+            except socket.timeout:
+                continue
+            if not chunk:
+                return
+            remaining = _process_chunk(parser, chunk, emit, remaining)
