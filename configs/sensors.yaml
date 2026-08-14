@@ -4,7 +4,7 @@ sensors:
   sleeve:
     enabled: true
     backend: serial_ascii
-    port: /dev/ttyUSB2
+    port: /dev/ttyUSB3
     baudrate: 115200
     timeout_s: 1.0
     delimiter: ";"

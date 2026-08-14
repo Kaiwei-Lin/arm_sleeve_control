@@ -5,7 +5,8 @@ phase3:
 
     # Must be filled from tools/calibrate_sleeve_elbow.py before real Sleeve use.
     input_min: 1
-    input_max: 551
+    input_max: 576.5
+
     invert_input: false
     deadzone: 0.02
 
