@@ -39,7 +39,7 @@ def main() -> int:
     controller = SafeArmController(DyMotorArm(config, args.library), config)
     exit_code = 0
     try:
-        controller.connect()
+        controller.connect(prepare_feedback=args.execute)
         state = controller.read_joint_state(args.joint)
         joint = config.joints[args.joint]
         requested = state.position + math.radians(args.delta_deg)

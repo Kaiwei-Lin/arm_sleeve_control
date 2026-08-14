@@ -19,6 +19,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--interval", type=float, default=0.2, help="print interval in seconds")
     parser.add_argument("--library", type=Path, help="path to libdymotor_bridge.so")
+    parser.add_argument(
+        "--initialize-board",
+        action="store_true",
+        help="explicitly Servo Off and initialize the mainboard state for PVCT; never Servo On or move",
+    )
     args = parser.parse_args()
     if args.interval <= 0:
         parser.error("--interval must be positive")
@@ -50,7 +55,7 @@ def main() -> int:
     controller = SafeArmController(DyMotorArm(config, args.library), config)
     exit_code = 0
     try:
-        controller.connect()
+        controller.connect(prepare_feedback=args.initialize_board)
         print("Connected; Servo remains OFF. Press Ctrl+C to stop.\n")
         while True:
             print_states(controller)

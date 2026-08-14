@@ -15,6 +15,9 @@ class RobotArm(ABC):
     def connect(self) -> None: ...
 
     @abstractmethod
+    def prepare_feedback(self) -> None: ...
+
+    @abstractmethod
     def enable(self) -> None: ...
 
     @abstractmethod
@@ -31,4 +34,3 @@ class RobotArm(ABC):
 
     @abstractmethod
     def close(self) -> None: ...
-

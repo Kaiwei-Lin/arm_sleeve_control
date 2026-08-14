@@ -50,7 +50,7 @@ def main() -> int:
     print(f"Library path: {args.library}")
     exit_code = 0
     try:
-        controller.connect()
+        controller.connect(prepare_feedback=args.execute)
         states = controller.read_joint_states()
         command = JointCommand(
             shoulder_flexion=states["shoulder_flexion"].position

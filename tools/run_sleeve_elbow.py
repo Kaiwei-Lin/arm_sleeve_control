@@ -92,7 +92,7 @@ def main() -> int:
         controller = SafeArmController(robot, robot_config)
 
         # Read and validate all three joints before opening the Sleeve or enabling anything.
-        controller.connect()
+        controller.connect(prepare_feedback=args.robot == "dymotor" and args.execute)
         startup_states = controller.read_joint_states()
         startup = {name: item.position for name, item in startup_states.items()}
         state = RuntimeState.ROBOT_READY

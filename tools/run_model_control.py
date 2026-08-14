@@ -142,7 +142,7 @@ def main() -> int:
             else DyMotorArm(robot_config, args.library, diagnostics=args.bridge_diagnostics)
         )
         controller = SafeArmController(robot, robot_config)
-        controller.connect()
+        controller.connect(prepare_feedback=args.robot == "dymotor" and args.execute)
         controller.read_joint_states()
         if isinstance(robot, DyMotorArm):
             print(f"loaded_so: {robot.loaded_library_path}")

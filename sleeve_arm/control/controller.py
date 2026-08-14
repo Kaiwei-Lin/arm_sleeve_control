@@ -22,12 +22,14 @@ class SafeArmController:
         self._last_targets: dict[str, float] = {}
         self._last_command_time: float | None = None
 
-    def connect(self) -> None:
+    def connect(self, prepare_feedback: bool = False) -> None:
         if self.connected:
             raise SafetyError("controller is already connected")
         try:
             self.robot.connect()
             self.connected = True
+            if prepare_feedback:
+                self.robot.prepare_feedback()
             last_states: dict[str, JointState] = {}
             for sample in range(self.config.safety.stable_feedback_samples):
                 states = self._read_all_valid()

@@ -24,6 +24,7 @@
 typedef struct ArmSession {
     RobotCtx *ctx;
     RobotMotor *motors[ARM_JOINT_COUNT];
+    int fast_mode;
     int open;
     int enabled;
 } ArmSession;
@@ -185,6 +186,7 @@ int arm_open(const ArmOpenConfig *config)
         release_session(0);
         return -2;
     }
+    g_arm.fast_mode = config->fast_mode;
 
     for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
         g_arm.motors[joint] = robot_create_motor(
@@ -318,6 +320,34 @@ int arm_get_joint_state(
     *bus = feedback.bus;
     *error = feedback.error;
     return status;
+}
+
+int arm_prepare_feedback(void)
+{
+    if (!g_arm.open) {
+        return fail(-2, "arm is not open");
+    }
+    if (g_arm.enabled) {
+        return fail(-5, "cannot prepare feedback while motors are enabled");
+    }
+
+    /* PVCTFast starts only after the mainboard state transition on a fresh
+       session. Keep every motor explicitly disabled across that transition;
+       do not set a mode, target position, or Servo On here. */
+    /* A fresh mainboard session may not accept motor commands yet. The 0x80
+       transition is the vendor's MIT-disable state; only enter state 1 after
+       Servo Off succeeds there. */
+    (void)servo_off_all();
+    robot_StateMachine(g_arm.ctx, 0x80);
+    if (servo_off_all() != 0) {
+        return fail(-6, "Servo Off failed in the disabled mainboard state");
+    }
+    robot_StateMachine(g_arm.ctx, 1);
+    if (servo_off_all() != 0) {
+        return fail(-6, "Servo Off failed after feedback initialization");
+    }
+    wait_for_fast_feedback(g_arm.fast_mode);
+    return 0;
 }
 
 void arm_set_diagnostics(int enabled)

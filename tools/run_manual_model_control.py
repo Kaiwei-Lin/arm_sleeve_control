@@ -57,7 +57,7 @@ def main() -> int:
     period = 1.0 / phase3.control_hz
     exit_code = 0
     try:
-        controller.connect()
+        controller.connect(prepare_feedback=args.robot == "dymotor" and args.execute)
         if isinstance(backend, DyMotorArm):
             print(f"loaded_so: {backend.loaded_library_path}")
         states = controller.read_joint_states()
