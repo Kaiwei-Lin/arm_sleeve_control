@@ -125,12 +125,13 @@ def _synchronize_latest(
     imu_sources: dict[str, ImuSource],
     sync: SensorSynchronizer,
     last_sleeve_timestamp: float | None,
+    rotation_config: UpperArmRotationConfig,
 ) -> SensorSample | None:
     _add_latest_imus(sync, imu_sources)
     sleeve = sleeve_source.latest()
     if sleeve is None or sleeve.timestamp == last_sleeve_timestamp:
         return None
-    return _attach_rotation_pair(sync.synchronize(sleeve), sync, sensor_config.upper_arm_rotation)
+    return _attach_rotation_pair(sync.synchronize(sleeve), sync, rotation_config)
 
 
 def prepare_upper_arm_rotation(
@@ -161,7 +162,9 @@ def prepare_upper_arm_rotation(
     last_timestamp = None
     startup_deadline = time.monotonic() + config.startup_timeout_s
     while time.monotonic() < startup_deadline:
-        sample = _synchronize_latest(sleeve_source, imu_sources, sync, last_timestamp)
+        sample = _synchronize_latest(
+            sleeve_source, imu_sources, sync, last_timestamp, config
+        )
         if sample is not None:
             last_timestamp = sample.timestamp
             if 0.0 <= time.monotonic() - sample.timestamp <= sensor_timeout_s:
@@ -181,7 +184,9 @@ def prepare_upper_arm_rotation(
     pairs: list[tuple[ImuFrame, ImuFrame]] = []
     deadline = time.monotonic() + config.calibration_seconds
     while time.monotonic() < deadline:
-        sample = _synchronize_latest(sleeve_source, imu_sources, sync, last_timestamp)
+        sample = _synchronize_latest(
+            sleeve_source, imu_sources, sync, last_timestamp, config
+        )
         if sample is not None:
             last_timestamp = sample.timestamp
             if 0.0 <= time.monotonic() - sample.timestamp <= sensor_timeout_s:
