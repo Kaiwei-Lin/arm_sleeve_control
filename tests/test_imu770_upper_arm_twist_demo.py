@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import struct
+from math import cos, radians, sin
 
+import numpy as np
 import pytest
 
 import tools.demo_upper_arm_twist_imu770 as demo
@@ -29,6 +31,13 @@ def make_imu770_frame(tid: int, *tlvs: bytes) -> bytes:
     message = b"".join(tlvs)
     body = struct.pack("<HB", tid, len(message)) + message
     return b"\x59\x53" + body + _checksum(body)
+
+
+def axis_angle(axis: tuple[float, float, float], angle_deg: float) -> tuple[float, float, float, float]:
+    unit = np.asarray(axis, dtype=float)
+    unit /= np.linalg.norm(unit)
+    half = radians(angle_deg) / 2.0
+    return (cos(half), *(unit * sin(half)))
 
 
 def test_parser_decodes_quaternion_only_frame() -> None:
@@ -111,3 +120,83 @@ def test_parser_counts_tid_gaps_with_60000_to_1_wrap() -> None:
     )
 
     assert parser.tid_drop_count == 3
+
+
+@pytest.mark.parametrize(
+    "quaternion",
+    [(0.0, 0.0, 0.0, 0.0), (float("nan"), 0.0, 0.0, 0.0)],
+)
+def test_normalize_quaternion_rejects_invalid_input(quaternion: tuple[float, ...]) -> None:
+    with pytest.raises(ValueError):
+        demo.normalize_quaternion(quaternion)
+
+
+def test_average_quaternions_aligns_opposite_signs() -> None:
+    averaged = demo.average_quaternions([(1.0, 0.0, 0.0, 0.0), (-1.0, 0.0, 0.0, 0.0)])
+
+    assert averaged == pytest.approx((1.0, 0.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize("angle_deg", [30.0, -45.0])
+def test_world_estimator_recovers_signed_x_twist(angle_deg: float) -> None:
+    estimator = demo.TwistEstimator(ema_alpha=1.0)
+    estimator.calibrate([(1.0, 0.0, 0.0, 0.0)])
+
+    result = estimator.update(axis_angle((1.0, 0.0, 0.0), angle_deg))
+
+    assert result.raw_deg == pytest.approx(angle_deg)
+    assert result.unwrapped_deg == pytest.approx(angle_deg)
+    assert result.filtered_deg == pytest.approx(angle_deg)
+
+
+def test_world_estimator_rejects_pure_y_swing_as_x_twist() -> None:
+    estimator = demo.TwistEstimator(ema_alpha=1.0)
+    estimator.calibrate([(1.0, 0.0, 0.0, 0.0)])
+
+    result = estimator.update(axis_angle((0.0, 1.0, 0.0), 70.0))
+
+    assert result.filtered_deg == pytest.approx(0.0)
+
+
+def test_world_estimator_unwraps_across_negative_180_degrees() -> None:
+    estimator = demo.TwistEstimator(ema_alpha=1.0)
+    estimator.calibrate([(1.0, 0.0, 0.0, 0.0)])
+
+    first = estimator.update(axis_angle((1.0, 0.0, 0.0), 179.0))
+    second = estimator.update(axis_angle((1.0, 0.0, 0.0), 181.0))
+
+    assert first.unwrapped_deg == pytest.approx(179.0)
+    assert second.raw_deg == pytest.approx(-179.0)
+    assert second.unwrapped_deg == pytest.approx(181.0)
+
+
+def test_world_estimator_applies_ema_to_continuous_angle() -> None:
+    estimator = demo.TwistEstimator(ema_alpha=0.5)
+    estimator.calibrate([(1.0, 0.0, 0.0, 0.0)])
+
+    estimator.update(axis_angle((1.0, 0.0, 0.0), 0.0))
+    result = estimator.update(axis_angle((1.0, 0.0, 0.0), 100.0))
+
+    assert result.filtered_deg == pytest.approx(50.0)
+
+
+def test_relative_estimator_cancels_common_x_rotation() -> None:
+    estimator = demo.RelativeTwistEstimator(ema_alpha=1.0)
+    identity = (1.0, 0.0, 0.0, 0.0)
+    estimator.calibrate([(identity, identity)])
+    common_rotation = axis_angle((1.0, 0.0, 0.0), 35.0)
+
+    result = estimator.update(common_rotation, common_rotation)
+
+    assert result.filtered_deg == pytest.approx(0.0)
+
+
+def test_estimators_require_calibration() -> None:
+    with pytest.raises(RuntimeError, match="calibrat"):
+        demo.TwistEstimator(ema_alpha=1.0).update((1.0, 0.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize("alpha", [0.0, -0.1, 1.1])
+def test_estimator_rejects_invalid_ema_alpha(alpha: float) -> None:
+    with pytest.raises(ValueError, match="ema_alpha"):
+        demo.TwistEstimator(ema_alpha=alpha)
