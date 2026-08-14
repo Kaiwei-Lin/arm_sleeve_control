@@ -96,12 +96,28 @@ def _add_latest_imus(sync: SensorSynchronizer, sources: dict[str, ImuSource]) ->
 def _rotation_pair(
     sample: SensorSample,
     config: UpperArmRotationConfig,
+    max_age_s: float | None = None,
 ) -> tuple[ImuFrame, ImuFrame]:
     upper = getattr(sample, config.upper_imu)
     reference = getattr(sample, config.reference_imu)
     if upper is None or reference is None:
-        raise ValueError("upper-arm rotation requires synchronized upper and reference IMU frames")
+        raise ValueError("upper-arm rotation requires latest upper and reference IMU frames")
+    if max_age_s is not None:
+        now = time.monotonic()
+        if any(abs(now - frame.timestamp) > max_age_s for frame in (upper, reference)):
+            raise ValueError("upper-arm rotation IMU pair is stale")
     return upper, reference
+
+
+def _attach_rotation_pair(
+    sample: SensorSample,
+    sync: SensorSynchronizer,
+    config: UpperArmRotationConfig,
+) -> SensorSample:
+    pair = sync.latest_imu_pair(config.max_sync_ms)
+    if pair is None:
+        return replace(sample, imu1=None, imu2=None)
+    return replace(sample, imu1=pair[0], imu2=pair[1])
 
 
 def _synchronize_latest(
@@ -114,7 +130,7 @@ def _synchronize_latest(
     sleeve = sleeve_source.latest()
     if sleeve is None or sleeve.timestamp == last_sleeve_timestamp:
         return None
-    return sync.synchronize(sleeve)
+    return _attach_rotation_pair(sync.synchronize(sleeve), sync, sensor_config.upper_arm_rotation)
 
 
 def prepare_upper_arm_rotation(
@@ -150,13 +166,13 @@ def prepare_upper_arm_rotation(
             last_timestamp = sample.timestamp
             if 0.0 <= time.monotonic() - sample.timestamp <= sensor_timeout_s:
                 try:
-                    estimator.validate_pair(*_rotation_pair(sample, config))
+                    estimator.validate_pair(*_rotation_pair(sample, config, sensor_timeout_s))
                     break
                 except ValueError:
                     pass
         time.sleep(0.001)
     else:
-        raise RuntimeError("no fresh synchronized valid dual-IMU quaternion pair before startup timeout")
+        raise RuntimeError("no fresh valid dual-IMU quaternion pair before startup timeout")
 
     input_fn("请保持大臂旋转零位并静止，按回车开始 IMU 零位标定：")
     print_fn(f"正在标定 {config.calibration_seconds:g} 秒；当前姿态定义为 upper_arm_rotation=0°...")
@@ -170,7 +186,7 @@ def prepare_upper_arm_rotation(
             last_timestamp = sample.timestamp
             if 0.0 <= time.monotonic() - sample.timestamp <= sensor_timeout_s:
                 try:
-                    pair = _rotation_pair(sample, config)
+                    pair = _rotation_pair(sample, config, sensor_timeout_s)
                     estimator.validate_pair(*pair)
                 except ValueError:
                     pass
@@ -323,10 +339,14 @@ def main() -> int:
             frame = source.latest()
             if frame is not None:
                 sample = sync.synchronize(frame)
+                if rotation_estimator is not None:
+                    sample = _attach_rotation_pair(sample, sync, rotation_config)
                 try:
                     intent = predictor.predict(sample)
                     if rotation_estimator is not None:
-                        last_rotation_frames = _rotation_pair(sample, rotation_config)
+                        last_rotation_frames = _rotation_pair(
+                            sample, rotation_config, phase3.sensor_timeout_ms / 1000.0
+                        )
                         rotation_result = rotation_estimator.update(*last_rotation_frames)
                         last_rotation_rad = math.radians(rotation_result.difference_deg)
                         intent = replace(intent, upper_arm_rotation_rad=last_rotation_rad)
@@ -367,6 +387,8 @@ def main() -> int:
             cycles += 1
             if frame is not None:
                 sample = sync.synchronize(frame)
+                if rotation_estimator is not None:
+                    sample = _attach_rotation_pair(sample, sync, rotation_config)
                 age = watchdog.age(sample.timestamp, now)
                 if watchdog.is_hard_timeout(sample.timestamp, now):
                     raise RuntimeError(f"Sleeve hard timeout: {age * 1000:.1f} ms")
@@ -392,7 +414,9 @@ def main() -> int:
                             try:
                                 if rotation_source_error is not None:
                                     raise rotation_source_error
-                                last_rotation_frames = _rotation_pair(sample, rotation_config)
+                                last_rotation_frames = _rotation_pair(
+                                    sample, rotation_config, phase3.sensor_timeout_ms / 1000.0
+                                )
                                 rotation_result = rotation_estimator.update(*last_rotation_frames)
                                 last_rotation_rad = math.radians(rotation_result.difference_deg)
                             except Exception as exc:

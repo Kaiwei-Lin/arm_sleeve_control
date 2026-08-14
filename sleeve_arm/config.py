@@ -88,7 +88,7 @@ class UpperArmRotationConfig:
     reference_imu: str
     twist_axis: str
     ema_alpha: float
-    max_sync_ms: float
+    max_sync_ms: float | None
     calibration_seconds: float
     startup_timeout_s: float
 
@@ -292,7 +292,11 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
         reference_imu=str(rotation_raw.get("reference_imu", "imu2")),
         twist_axis=str(rotation_raw.get("twist_axis", "x")).lower(),
         ema_alpha=float(rotation_raw.get("ema_alpha", 0.35)),
-        max_sync_ms=float(rotation_raw.get("max_sync_ms", 20.0)),
+        max_sync_ms=(
+            None
+            if rotation_raw.get("max_sync_ms") is None
+            else float(rotation_raw["max_sync_ms"])
+        ),
         calibration_seconds=float(rotation_raw.get("calibration_seconds", 2.0)),
         startup_timeout_s=float(rotation_raw.get("startup_timeout_s", 10.0)),
     )
@@ -304,8 +308,11 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
         raise ValueError("upper_arm_rotation.twist_axis must be x, y, or z")
     if not 0.0 < rotation.ema_alpha <= 1.0:
         raise ValueError("upper_arm_rotation.ema_alpha must be in (0, 1]")
+    if rotation.max_sync_ms is not None and (
+        not math.isfinite(rotation.max_sync_ms) or rotation.max_sync_ms <= 0.0
+    ):
+        raise ValueError("upper_arm_rotation.max_sync_ms must be positive or null")
     if not all(math.isfinite(value) and value > 0.0 for value in (
-        rotation.max_sync_ms,
         rotation.calibration_seconds,
         rotation.startup_timeout_s,
     )):

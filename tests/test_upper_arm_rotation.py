@@ -106,6 +106,7 @@ def test_optional_rotation_disabled_needs_no_imus(tmp_path) -> None:
         tmp_path, enabled=False, imu1_enabled=False, imu2_enabled=False
     ))
     assert not config.upper_arm_rotation.enabled
+    assert config.upper_arm_rotation.max_sync_ms is None
 
 
 def test_enabled_rotation_accepts_two_enabled_role_sources(tmp_path) -> None:

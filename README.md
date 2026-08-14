@@ -403,7 +403,7 @@ upper_arm_rotation:
   reference_imu: imu2
   twist_axis: x
   ema_alpha: 0.35
-  max_sync_ms: 20
+  max_sync_ms: null
   calibration_seconds: 2.0
   startup_timeout_s: 10.0
 ```
@@ -417,7 +417,7 @@ relative_delta = inverse(relative_zero) * relative_now
 upper_arm_rotation_deg = world.filtered_deg - relative.filtered_deg
 ```
 
-两路 twist 均保留 ±180° unwrap 和配置化 EMA。两 IMU 帧时间差超过 `max_sync_ms`、四元数缺失/非法或数据陈旧时，不生成新的 rotation 目标；短暂失败保持最后安全目标，连续失败进入现有 FAULT 流程。Estimator 输出的是人体语义角，转为 rad 后仍须经过 `ArmMapper`（robot zero/direction/limits）和 `SafeArmController`，不会直接发给 ID24。
+两路 twist 均保留 ±180° unwrap 和配置化 EMA。当前 `max_sync_ms: null`，每次直接使用两个 IMU 各自最新的帧，时间差只用于 telemetry，不因时间戳未对齐而拒绝；任一帧 stale、四元数缺失或非法时仍不生成新目标。以后若需要严格同步，可填写正数毫秒阈值。短暂失败保持最后安全目标，连续失败进入现有 FAULT 流程。Estimator 输出的是人体语义角，转为 rad 后仍须经过 `ArmMapper`（robot zero/direction/limits）和 `SafeArmController`，不会直接发给 ID24。
 
 先只测试双 IMU，不创建 Robot：
 

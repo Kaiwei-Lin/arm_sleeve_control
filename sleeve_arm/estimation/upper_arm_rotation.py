@@ -164,10 +164,10 @@ class UpperArmRotationResult:
 class UpperArmRotationEstimator:
     """Estimate semantic upper-arm rotation from synchronized existing IMU frames."""
 
-    def __init__(self, ema_alpha: float = 0.35, max_sync_ms: float = 20.0, axis: str = "x") -> None:
-        if not math.isfinite(max_sync_ms) or max_sync_ms <= 0.0:
-            raise ValueError("max_sync_ms must be positive and finite")
-        self.max_sync_ms = float(max_sync_ms)
+    def __init__(self, ema_alpha: float = 0.35, max_sync_ms: float | None = None, axis: str = "x") -> None:
+        if max_sync_ms is not None and (not math.isfinite(max_sync_ms) or max_sync_ms <= 0.0):
+            raise ValueError("max_sync_ms must be positive or null")
+        self.max_sync_ms = None if max_sync_ms is None else float(max_sync_ms)
         self.world = TwistEstimator(ema_alpha, axis)
         self.relative = RelativeTwistEstimator(ema_alpha, axis)
         self.sync_rejected_count = 0
@@ -210,7 +210,7 @@ class UpperArmRotationEstimator:
 
     def _quaternions(self, upper: ImuFrame, reference: ImuFrame) -> tuple[np.ndarray, np.ndarray]:
         gap_ms = abs(upper.timestamp - reference.timestamp) * 1000.0
-        if gap_ms > self.max_sync_ms:
+        if self.max_sync_ms is not None and gap_ms > self.max_sync_ms:
             self.sync_rejected_count += 1
             raise ValueError(
                 f"upper/reference IMU sync gap {gap_ms:.3f} ms exceeds {self.max_sync_ms:.3f} ms"
