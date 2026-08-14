@@ -244,15 +244,18 @@ int arm_open(const ArmOpenConfig *config)
         return -2;
     }
 
-    result = discover_required_motors(config);
-    if (result != 0) {
-        release_session(0);
-        return result;
-    }
+    /* Match the vendor examples exactly: configure fast feedback immediately
+       after the network connection, before creating any motor objects. */
     if (!robot_set_fast_mode(g_arm.ctx, config->fast_mode)) {
         fail(-2, "robot_set_fast_mode failed");
         release_session(0);
         return -2;
+    }
+
+    result = discover_required_motors(config);
+    if (result != 0) {
+        release_session(0);
+        return result;
     }
 
     for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
@@ -344,7 +347,18 @@ static int read_joint_feedback(int joint, JointFeedback *feedback)
     }
     if (!isfinite(sdk_position) || !isfinite(sdk_velocity) || !isfinite(sdk_torque) ||
         sdk_bus == 0U) {
-        return fail(-4, "PVCT feedback is unavailable or invalid for joint %d", joint);
+        return fail(
+            -4,
+            "PVCT feedback is unavailable or invalid for joint %d "
+            "(position=%.9g velocity=%.9g torque=%.9g state=%u bus=%u error=%u)",
+            joint,
+            (double)sdk_position,
+            (double)sdk_velocity,
+            (double)sdk_torque,
+            sdk_state,
+            sdk_bus,
+            sdk_error
+        );
     }
     return 0;
 }
