@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,21 +15,15 @@ from sleeve_arm.domain import ArmAction, MotionIntent, SensorSample, SleeveFrame
 from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBasedPredictor
 from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibration_samples
 from sleeve_arm.robot import FakeRobotArm
-from sleeve_arm.sources import FakeSleeveSource
-from tools.calibrate_flex_model import LatestFlexReader
 from tools.debug_model_mapping import manual_intent
 
 
 def model_config(**changes) -> FlexModelConfig:
     values = {
-        "model_module": "unused_in_mock",
-        "model_class": "FlexPredictor",
-        "sleeve_channels": (2, 3, 4),
-        "baseline": (1.0, 2.0, 3.0),
-        "scale": (4.0, 5.0, 6.0),
-        "trial_rest": (7.0, 8.0, 9.0),
-        "min_action_confidence": 0.6,
-        "required_consecutive_frames": 3,
+        "model_dir": Path("unused-models"),
+        "sleeve_channels": (3, 4, 5),
+        "calibration_file": Path("unused-calibration.json"),
+        "calibration_seconds": 3.0,
         "angle_min_deg": 0.0,
         "angle_max_deg": 180.0,
     }
@@ -211,78 +206,70 @@ def test_calibrate_estimator_saves_then_resets(tmp_path: Path) -> None:
     ]
 
 
-def test_latest_flex_reader_returns_ch2_ch3_ch4_in_order() -> None:
-    source = FakeSleeveSource()
-    source.start()
-    try:
-        values = LatestFlexReader(source, (2, 3, 4))()
-    finally:
-        source.close()
-    assert values == pytest.approx([1.0, 2.0, 3.0])
-
-
 @dataclass
-class Result:
+class EstimatorResult:
     action: object
-    action_probabilities: object
     angle_deg: object
+    action_confidence: object
+    angle_confidence: object
+    moving: object
 
 
-class MockModel:
-    def __init__(self, results: list[Result]) -> None:
+class FakeEstimator:
+    def __init__(self, results: list[EstimatorResult]) -> None:
         self.results = iter(results)
         self.calls: list[dict[str, object]] = []
+        self.reset_calls = 0
 
-    def predict_raw(self, **kwargs):
+    def update(self, **kwargs):
         self.calls.append(kwargs)
         return next(self.results)
 
+    def reset(self) -> None:
+        self.reset_calls += 1
 
-def sample(ch2: float = 20.0, ch3: float = 30.0, ch4: float = 40.0) -> SensorSample:
-    return SensorSample(1.0, SleeveFrame(1.0, (10.0, ch2, ch3, ch4, 50.0)))
+
+def sample(
+    ch2: float = 20.0,
+    ch3: float = 30.0,
+    ch4: float = 40.0,
+    ch5: float = 50.0,
+    *,
+    timestamp: float = 1.0,
+) -> SensorSample:
+    return SensorSample(timestamp, SleeveFrame(timestamp, (10.0, ch2, ch3, ch4, ch5, 60.0)))
 
 
 @pytest.mark.parametrize(
-    ("action", "flexion", "abduction"),
+    ("label", "action", "flexion", "abduction"),
     (
-        (0, math.pi / 2, 0.0),
-        (1, 0.0, math.pi / 2),
-        (2, -math.pi / 2, 0.0),
+        ("Forward", ArmAction.FORWARD, math.pi / 2, 0.0),
+        ("Lateral", ArmAction.LATERAL, 0.0, math.pi / 2),
+        ("Backward", ArmAction.BACKWARD, -math.pi / 2, 0.0),
     ),
 )
-def test_action_mapping_and_exact_model_inputs(action: int, flexion: float, abduction: float) -> None:
-    model = MockModel([Result(action, (0.7, 0.2, 0.1), 90.0)])
-    predictor = FlexModelPredictor(model_config(), model)
-    intent = predictor.predict(sample())
-    assert intent.action is ArmAction(action)
+def test_action_mapping_and_exact_model_inputs(
+    label: str,
+    action: ArmAction,
+    flexion: float,
+    abduction: float,
+) -> None:
+    estimator = FakeEstimator([EstimatorResult(label, 90.0, 0.8, 0.7, True)])
+    predictor = FlexModelPredictor(model_config(), estimator=estimator)
+    intent = predictor.predict(sample(timestamp=1.25))
+    assert intent.action is action
     assert intent.shoulder_flexion_rad == pytest.approx(flexion)
     assert intent.shoulder_abduction_rad == pytest.approx(abduction)
-    assert model.calls == [{
-        "flex": [20.0, 30.0, 40.0],
-        "calibration_baseline": [1.0, 2.0, 3.0],
-        "calibration_scale": [4.0, 5.0, 6.0],
-        "trial_rest": [7.0, 8.0, 9.0],
+    assert estimator.calls == [{
+        "flex1": 30.0,
+        "flex2": 40.0,
+        "flex3": 50.0,
+        "timestamp_ns": 1_250_000_000,
     }]
-
-
-@pytest.mark.parametrize(
-    ("label", "action"),
-    (
-        ("Forward", ArmAction.FORWARD),
-        ("Lateral", ArmAction.LATERAL),
-        ("Backward", ArmAction.BACKWARD),
-    ),
-)
-def test_model_string_action_labels(label: str, action: ArmAction) -> None:
-    result = Result(label, (0.7, 0.2, 0.1), 10.0)
-    assert FlexModelPredictor(model_config(), MockModel([result])).predict(sample()).action is action
-
-
-def test_model_labeled_probability_mapping() -> None:
-    result = Result("Backward", {"Forward": 0.1, "Lateral": 0.2, "Backward": 0.7}, 10.0)
-    intent = FlexModelPredictor(model_config(), MockModel([result])).predict(sample())
-    assert intent.action_probabilities == pytest.approx((0.1, 0.2, 0.7))
-    assert intent.confidence == pytest.approx(0.7)
+    assert intent.model_action == label
+    assert intent.confidence == pytest.approx(0.8)
+    assert intent.angle_confidence == pytest.approx(0.7)
+    assert intent.moving is True
 
 
 def test_mapper_uses_absolute_shoulder_angles_not_startup_offsets() -> None:
@@ -305,66 +292,128 @@ def test_manual_backward_model_output_uses_absolute_joint_semantics() -> None:
     assert intent.elbow_flexion == pytest.approx(math.radians(90.0))
 
 
-def test_low_confidence_is_recorded_but_not_filtered() -> None:
-    model = MockModel([Result(1, (0.49, 0.02, 0.49), 10.0)])
-    intent = FlexModelPredictor(model_config(min_action_confidence=0.9), model).predict(sample())
-    assert intent.action is ArmAction.LATERAL
-    assert intent.confidence == pytest.approx(0.02)
-    assert intent.shoulder_abduction_rad == pytest.approx(math.radians(10))
-
-
 def test_model_instance_is_reused_across_predictions() -> None:
-    model = MockModel([
-        Result(0, (0.8, 0.1, 0.1), 10.0),
-        Result(0, (0.8, 0.1, 0.1), 11.0),
+    estimator = FakeEstimator([
+        EstimatorResult("Forward", 10.0, 0.8, 0.7, True),
+        EstimatorResult("Forward", 11.0, 0.8, 0.7, True),
     ])
-    predictor = FlexModelPredictor(model_config(), model)
+    predictor = FlexModelPredictor(model_config(), estimator=estimator)
     predictor.predict(sample())
-    predictor.predict(sample())
-    assert len(model.calls) == 2
+    predictor.predict(sample(timestamp=1.1))
+    assert len(estimator.calls) == 2
 
 
-def test_action_transition_requires_consecutive_frames() -> None:
-    results = [
-        Result(0, (0.8, 0.1, 0.1), 20.0),
-        Result(1, (0.1, 0.8, 0.1), 30.0),
-        Result(0, (0.8, 0.1, 0.1), 21.0),
-        Result(1, (0.1, 0.8, 0.1), 30.0),
-        Result(1, (0.1, 0.8, 0.1), 31.0),
-        Result(1, (0.1, 0.8, 0.1), 32.0),
-    ]
-    predictor = FlexModelPredictor(model_config(), MockModel(results))
-    actions = [predictor.predict(sample()).action for _ in results]
-    assert actions == [ArmAction.FORWARD] * 5 + [ArmAction.LATERAL]
+def test_rest_holds_last_active_shoulder_target() -> None:
+    predictor = FlexModelPredictor(model_config(), estimator=FakeEstimator([
+        EstimatorResult("Lateral", 30.0, 0.8, 0.7, True),
+        EstimatorResult("Rest", 0.0, 1.0, 1.0, False),
+    ]))
+    active = predictor.predict(sample(timestamp=1.0))
+    resting = predictor.predict(sample(timestamp=1.1))
+    assert resting.action is None
+    assert resting.model_action == "Rest"
+    assert resting.shoulder_flexion_rad == active.shoulder_flexion_rad
+    assert resting.shoulder_abduction_rad == active.shoulder_abduction_rad
+
+
+@pytest.mark.parametrize("state", ("Rest", "Unknown"))
+def test_non_active_before_first_action_leaves_shoulders_unset(state: str) -> None:
+    intent = FlexModelPredictor(
+        model_config(),
+        estimator=FakeEstimator([EstimatorResult(state, 0.0, 0.0, 0.0, False)]),
+    ).predict(sample())
+    assert intent.action is None
+    assert intent.shoulder_flexion_rad is None
+    assert intent.shoulder_abduction_rad is None
+
+
+def test_predictor_reset_clears_estimator_and_retained_targets() -> None:
+    estimator = FakeEstimator([
+        EstimatorResult("Forward", 30.0, 0.8, 0.7, True),
+        EstimatorResult("Rest", 0.0, 1.0, 1.0, False),
+    ])
+    predictor = FlexModelPredictor(model_config(), estimator=estimator)
+    predictor.predict(sample())
+    predictor.reset()
+    intent = predictor.predict(sample(timestamp=1.1))
+    assert estimator.reset_calls == 1
+    assert intent.shoulder_flexion_rad is None
+    assert intent.shoulder_abduction_rad is None
+
+
+def test_predictor_reuses_saved_calibration_with_loaded_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    old_calibration = object()
+    new_calibration = object()
+
+    @dataclass(frozen=True)
+    class Artifacts:
+        default_calibration: object
+        marker: str = "trained-models"
+
+    class ReloadableEstimator:
+        instances: list["ReloadableEstimator"] = []
+
+        def __init__(self, artifacts: Artifacts) -> None:
+            self.artifacts = artifacts
+            self.instances.append(self)
+
+        def reset(self) -> None:
+            pass
+
+    loaded_paths: list[Path] = []
+
+    class FlexCalibration:
+        @classmethod
+        def load(cls, path: Path):
+            loaded_paths.append(path)
+            return new_calibration
+
+    monkeypatch.setitem(
+        sys.modules,
+        "flexarm.calibration",
+        SimpleNamespace(FlexCalibration=FlexCalibration),
+    )
+    estimator = ReloadableEstimator(Artifacts(old_calibration))
+    predictor = FlexModelPredictor(model_config(), estimator=estimator)
+    path = tmp_path / "saved.json"
+
+    predictor.reuse_calibration(path)
+
+    assert loaded_paths == [path]
+    assert len(ReloadableEstimator.instances) == 2
+    assert ReloadableEstimator.instances[-1].artifacts == Artifacts(new_calibration)
 
 
 @pytest.mark.parametrize(
     "result",
     (
-        Result(99, (0.8, 0.1, 0.1), 10.0),
-        Result("unknown", (0.8, 0.1, 0.1), 10.0),
-        Result(1.5, (0.8, 0.1, 0.1), 10.0),
-        Result(0, (0.8, 0.1), 10.0),
-        Result(0, (math.nan, 0.1, 0.1), 10.0),
-        Result(0, (0.8, 0.1, 0.1), math.nan),
-        Result(0, (0.8, 0.1, 0.1), math.inf),
-        Result(0, (0.8, 0.1, 0.1), 181.0),
+        EstimatorResult("Turning", 10.0, 0.8, 0.7, True),
+        EstimatorResult("Forward", math.nan, 0.8, 0.7, True),
+        EstimatorResult("Forward", math.inf, 0.8, 0.7, True),
+        EstimatorResult("Forward", 181.0, 0.8, 0.7, True),
+        EstimatorResult("Forward", 10.0, math.nan, 0.7, True),
+        EstimatorResult("Forward", 10.0, -0.1, 0.7, True),
+        EstimatorResult("Forward", 10.0, 0.8, 1.1, True),
+        EstimatorResult("Forward", 10.0, 0.8, 0.7, 1),
     ),
 )
-def test_invalid_model_output_is_rejected(result: Result) -> None:
+def test_invalid_model_output_is_rejected(result: EstimatorResult) -> None:
     with pytest.raises(ValueError):
-        FlexModelPredictor(model_config(), MockModel([result])).predict(sample())
+        FlexModelPredictor(model_config(), estimator=FakeEstimator([result])).predict(sample())
 
 
 def test_three_dof_mock_model_to_fake_robot_through_safety() -> None:
     phase3 = load_phase3_config().elbow
     elbow_config = replace(
-        phase3, input_min=0.0, input_max=40.0,
+        phase3, sleeve_channel=2, input_min=0.0, input_max=40.0,
         angle_min_deg=0.0, angle_max_deg=90.0,
         filter=replace(phase3.filter, type="none", alpha=None),
     )
-    shoulder = FlexModelPredictor(model_config(required_consecutive_frames=1), MockModel([
-        Result(1, (0.1, 0.8, 0.1), 30.0)
+    shoulder = FlexModelPredictor(model_config(), estimator=FakeEstimator([
+        EstimatorResult("Lateral", 30.0, 0.8, 0.7, True)
     ]))
     predictor = ArmMotionPredictor(RuleBasedPredictor(elbow_config), shoulder)
     robot_config = load_robot_config()
@@ -380,7 +429,6 @@ def test_three_dof_mock_model_to_fake_robot_through_safety() -> None:
     controller.shutdown()
 
     assert safe["shoulder_flexion"] == 0.0
-    # The model angle is absolute; Phase 1's one-degree step cap approaches it safely.
-    assert safe["shoulder_abduction"] == pytest.approx(math.radians(1))
-    assert safe["elbow_flexion"] == pytest.approx(math.radians(1))
+    assert safe["shoulder_abduction"] == pytest.approx(math.radians(30))
+    assert safe["elbow_flexion"] == pytest.approx(math.radians(90))
     assert robot.events == ["connect", "enable", "disable", "close"]

@@ -2,153 +2,174 @@ from __future__ import annotations
 
 import importlib
 import math
-import operator
 import time
-from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from sleeve_arm.config import FlexModelConfig
 from sleeve_arm.domain import ArmAction, MotionIntent, SensorSample
 from sleeve_arm.predictor.base import MotionPredictor
+from sleeve_arm.predictor.calibration import calibrate_estimator
+
+
+_ACTIVE_ACTIONS = {
+    "Forward": ArmAction.FORWARD,
+    "Lateral": ArmAction.LATERAL,
+    "Backward": ArmAction.BACKWARD,
+}
+_NON_ACTIVE_ACTIONS = {"Rest", "Unknown"}
 
 
 class FlexModelPredictor(MotionPredictor):
-    """Isolate the pip-installed FlexPredictor and emit human shoulder semantics."""
+    """Adapt one stateful FlexArmEstimator to human shoulder semantics."""
 
-    def __init__(self, config: FlexModelConfig, model: Any | None = None) -> None:
+    def __init__(self, config: FlexModelConfig, estimator: Any | None = None) -> None:
         self.config = config
-        self._model = model if model is not None else self._load_model()
-        self._accepted_action: ArmAction | None = None
-        self._candidate_action: ArmAction | None = None
-        self._candidate_count = 0
-        self._last_accepted_angle_deg = 0.0
+        self._estimator = estimator if estimator is not None else self._load_model()
+        self._last_active_flexion: float | None = None
+        self._last_active_abduction: float | None = None
         self.last_flex: tuple[float, float, float] | None = None
         self.last_raw_action: ArmAction | None = None
-        self.last_probabilities: tuple[float, ...] | None = None
+        self.last_model_action: str | None = None
         self.last_confidence: float | None = None
+        self.last_angle_confidence: float | None = None
         self.last_angle_deg: float | None = None
+        self.last_moving: bool | None = None
         self.last_inference_ms: float | None = None
 
     def _load_model(self) -> Any:
         try:
-            module = importlib.import_module(self.config.model_module)
-        except (ImportError, ModuleNotFoundError) as exc:
+            module = importlib.import_module("flexarm")
+            estimator_class = getattr(module, "FlexArmEstimator")
+            return estimator_class.from_pretrained(self.config.model_dir)
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             raise RuntimeError(
-                "Flex model module could not be imported. "
-                f"Expected module: {self.config.model_module}"
+                "FlexArmEstimator could not be imported; install the flexarm-estimator wheel"
             ) from exc
-        try:
-            model_class = getattr(module, self.config.model_class)
-        except AttributeError as exc:
+        except Exception as exc:
             raise RuntimeError(
-                f"Flex model class {self.config.model_class!r} was not found "
-                f"in {self.config.model_module!r}"
+                f"FlexArmEstimator could not load model artifacts from {self.config.model_dir}: {exc}"
             ) from exc
-        return model_class()
 
     def predict(self, sample: SensorSample) -> MotionIntent:
         indexes = tuple(channel - 1 for channel in self.config.sleeve_channels)
         if max(indexes) >= len(sample.sleeve.channels):
             raise ValueError(
-                f"CH2/CH3/CH4 are required; SleeveFrame has {len(sample.sleeve.channels)} channels"
+                "CH3/CH4/CH5 are required; "
+                f"SleeveFrame has {len(sample.sleeve.channels)} channels"
             )
         flex = tuple(float(sample.sleeve.channels[index]) for index in indexes)
         if not all(math.isfinite(value) for value in flex):
-            raise ValueError("CH2/CH3/CH4 must be finite")
+            raise ValueError("CH3/CH4/CH5 must be finite")
 
         started = time.perf_counter()
-        result = self._model.predict_raw(
-            flex=list(flex),
-            calibration_baseline=list(self.config.baseline),
-            calibration_scale=list(self.config.scale),
-            trial_rest=list(self.config.trial_rest),
+        result = self._estimator.update(
+            flex1=flex[0],
+            flex2=flex[1],
+            flex3=flex[2],
+            timestamp_ns=int(sample.timestamp * 1e9),
         )
         inference_ms = (time.perf_counter() - started) * 1000.0
-        action_value = getattr(result, "action", None)
-        try:
-            if isinstance(action_value, str):
-                raw_action = {
-                    "forward": ArmAction.FORWARD,
-                    "lateral": ArmAction.LATERAL,
-                    "backward": ArmAction.BACKWARD,
-                }[action_value.strip().casefold()]
-            else:
-                raw_action = ArmAction(operator.index(action_value))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"invalid model action: {action_value!r}") from exc
-        probability_value = getattr(result, "action_probabilities", None)
-        try:
-            if isinstance(probability_value, Mapping):
-                by_label = {str(key).strip().casefold(): value for key, value in probability_value.items()}
-                probabilities = tuple(
-                    float(by_label[label]) for label in ("forward", "lateral", "backward")
-                )
-            else:
-                probabilities = tuple(float(value) for value in probability_value)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(
-                "invalid model action_probabilities: "
-                f"type={type(probability_value).__name__}, value={probability_value!r}"
-            ) from exc
-        if len(probabilities) < 3 or not all(math.isfinite(value) and 0 <= value <= 1 for value in probabilities):
-            raise ValueError("action_probabilities must contain at least three finite values in [0, 1]")
-        try:
-            angle_deg = float(result.angle_deg)
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise ValueError("invalid model angle_deg") from exc
-        if not math.isfinite(angle_deg) or not self.config.angle_min_deg <= angle_deg <= self.config.angle_max_deg:
-            raise ValueError(
-                f"angle_deg must be finite and in [{self.config.angle_min_deg}, {self.config.angle_max_deg}]"
-            )
 
-        confidence = probabilities[int(raw_action)]
-        accepted_action, accepted_angle = self._stabilize(raw_action, angle_deg)
-        flexion = abduction = 0.0
-        angle_rad = math.radians(accepted_angle)
-        if accepted_action is ArmAction.FORWARD:
-            flexion = angle_rad
-        elif accepted_action is ArmAction.BACKWARD:
-            flexion = -angle_rad
-        else:
-            abduction = angle_rad
+        model_action = getattr(result, "action", None)
+        if model_action not in _ACTIVE_ACTIONS and model_action not in _NON_ACTIVE_ACTIONS:
+            raise ValueError(f"invalid model action: {model_action!r}")
+        angle_deg = self._finite_number("angle_deg", getattr(result, "angle_deg", None))
+        action_confidence = self._confidence(
+            "action_confidence", getattr(result, "action_confidence", None)
+        )
+        angle_confidence = self._confidence(
+            "angle_confidence", getattr(result, "angle_confidence", None)
+        )
+        moving = getattr(result, "moving", None)
+        if type(moving) is not bool:
+            raise ValueError("moving must be a boolean")
+
+        action: ArmAction | None = None
+        flexion = self._last_active_flexion
+        abduction = self._last_active_abduction
+        if model_action in _ACTIVE_ACTIONS:
+            if not self.config.angle_min_deg <= angle_deg <= self.config.angle_max_deg:
+                raise ValueError(
+                    f"angle_deg must be in [{self.config.angle_min_deg}, {self.config.angle_max_deg}]"
+                )
+            action = _ACTIVE_ACTIONS[model_action]
+            flexion = abduction = 0.0
+            angle_rad = math.radians(angle_deg)
+            if action is ArmAction.FORWARD:
+                flexion = angle_rad
+            elif action is ArmAction.BACKWARD:
+                flexion = -angle_rad
+            else:
+                abduction = angle_rad
+            self._last_active_flexion = flexion
+            self._last_active_abduction = abduction
 
         self.last_flex = flex
-        self.last_raw_action = raw_action
-        self.last_probabilities = probabilities
-        self.last_confidence = confidence
+        self.last_raw_action = action
+        self.last_model_action = model_action
+        self.last_confidence = action_confidence
+        self.last_angle_confidence = angle_confidence
         self.last_angle_deg = angle_deg
+        self.last_moving = moving
         self.last_inference_ms = inference_ms
         return MotionIntent(
             timestamp=sample.timestamp,
             shoulder_flexion_rad=flexion,
             shoulder_abduction_rad=abduction,
-            action=accepted_action,
-            confidence=confidence,
-            action_probabilities=probabilities,
-            angle_deg=accepted_angle,
+            action=action,
+            confidence=action_confidence,
+            angle_deg=angle_deg,
             inference_ms=inference_ms,
+            model_action=model_action,
+            angle_confidence=angle_confidence,
+            moving=moving,
         )
 
-    def _stabilize(self, action: ArmAction, angle_deg: float) -> tuple[ArmAction, float]:
-        if self._accepted_action is None:
-            self._accepted_action = action
-            self._last_accepted_angle_deg = angle_deg
-        elif action is self._accepted_action:
-            self._candidate_action = None
-            self._candidate_count = 0
-            self._last_accepted_angle_deg = angle_deg
-        else:
-            if action is self._candidate_action:
-                self._candidate_count += 1
-            else:
-                self._candidate_action = action
-                self._candidate_count = 1
-            if self._candidate_count >= self.config.required_consecutive_frames:
-                self._accepted_action = action
-                self._last_accepted_angle_deg = angle_deg
-                self._candidate_action = None
-                self._candidate_count = 0
-        return self._accepted_action, self._last_accepted_angle_deg
+    def reset(self) -> None:
+        self._estimator.reset()
+        self._last_active_flexion = None
+        self._last_active_abduction = None
+
+    def calibrate(self, rows: np.ndarray, output: Path) -> Any:
+        calibration = calibrate_estimator(self._estimator, rows, output)
+        self._last_active_flexion = None
+        self._last_active_abduction = None
+        return calibration
+
+    def reuse_calibration(self, path: Path) -> None:
+        try:
+            calibration_module = importlib.import_module("flexarm.calibration")
+            calibration = calibration_module.FlexCalibration.load(path)
+            artifacts = replace(
+                self._estimator.artifacts,
+                default_calibration=calibration,
+            )
+            self._estimator = self._estimator.__class__(artifacts)
+        except Exception as exc:
+            raise RuntimeError(f"could not reuse FlexArm calibration from {path}: {exc}") from exc
+        self._last_active_flexion = None
+        self._last_active_abduction = None
+
+    @staticmethod
+    def _finite_number(name: str, value: Any) -> float:
+        try:
+            result = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be finite") from exc
+        if not math.isfinite(result):
+            raise ValueError(f"{name} must be finite")
+        return result
+
+    @classmethod
+    def _confidence(cls, name: str, value: Any) -> float:
+        result = cls._finite_number(name, value)
+        if not 0.0 <= result <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1]")
+        return result
 
 
 class ArmMotionPredictor(MotionPredictor):
@@ -169,4 +190,7 @@ class ArmMotionPredictor(MotionPredictor):
             action_probabilities=shoulder.action_probabilities,
             angle_deg=shoulder.angle_deg,
             inference_ms=shoulder.inference_ms,
+            model_action=shoulder.model_action,
+            angle_confidence=shoulder.angle_confidence,
+            moving=shoulder.moving,
         )
