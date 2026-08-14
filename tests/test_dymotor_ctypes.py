@@ -16,7 +16,7 @@ def test_ctypes_bridge_abi_layout_on_64_bit_linux() -> None:
     assert _ArmOpenConfig.local_ip.offset == 8
     assert _ArmOpenConfig.remote_ip.offset == 24
     assert _ArmOpenConfig.motor_ids.offset == 40
-    assert _ArmOpenConfig.can_ids.offset == 46
+    assert _ArmOpenConfig.can_ids.offset == 48
 
 
 def test_explicit_pvct_pointer_types() -> None:
@@ -140,7 +140,7 @@ def test_absolute_semantic_target_is_transformed_before_bridge_call() -> None:
         sent: list[float] = []
 
         def arm_set_joint_positions(self, positions, mask):
-            self.sent = [float(positions[index]) for index in range(3)]
+            self.sent = [float(positions[index]) for index in range(4)]
             return 0
 
     config = load_robot_config()
@@ -152,3 +152,24 @@ def test_absolute_semantic_target_is_transformed_before_bridge_call() -> None:
     robot.connected = robot.enabled = True
     robot.set_joint_position("shoulder_flexion", 0.5)
     assert library.sent[0] == pytest.approx(0.0388 - 0.5)
+
+
+def test_upper_arm_rotation_uses_fourth_bridge_slot() -> None:
+    class Library:
+        sent: list[float] = []
+        mask = 0
+
+        def arm_set_joint_positions(self, positions, mask):
+            self.sent = [float(positions[index]) for index in range(4)]
+            self.mask = int(mask)
+            return 0
+
+    robot = DyMotorArm(load_robot_config())
+    library = Library()
+    robot._lib = library  # type: ignore[assignment]
+    robot.connected = robot.enabled = True
+
+    robot.set_joint_position("upper_arm_rotation", 0.25)
+
+    assert library.sent == pytest.approx([0.0, 0.0, 0.0, 0.25])
+    assert library.mask == 0b1000

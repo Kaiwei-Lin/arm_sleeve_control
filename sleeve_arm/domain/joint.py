@@ -7,6 +7,7 @@ JOINT_NAMES = (
     "shoulder_flexion",
     "shoulder_abduction",
     "elbow_flexion",
+    "upper_arm_rotation",
 )
 
 

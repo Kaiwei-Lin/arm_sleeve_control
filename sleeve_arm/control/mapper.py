@@ -4,7 +4,7 @@ import math
 from collections.abc import Mapping
 
 from sleeve_arm.config import Phase3ElbowConfig
-from sleeve_arm.domain import MotionIntent
+from sleeve_arm.domain import JOINT_NAMES, MotionIntent
 
 
 class ArmMapper:
@@ -15,9 +15,9 @@ class ArmMapper:
         config: Phase3ElbowConfig,
         startup_positions: Mapping[str, float],
     ) -> None:
-        required = {"shoulder_flexion", "shoulder_abduction", "elbow_flexion"}
+        required = set(JOINT_NAMES)
         if set(startup_positions) != required or not all(math.isfinite(value) for value in startup_positions.values()):
-            raise ValueError("startup_positions must contain three finite semantic joint positions")
+            raise ValueError("startup_positions must contain all finite semantic joint positions")
         self.config = config
         self.startup_positions = dict(startup_positions)
 
@@ -31,6 +31,9 @@ class ArmMapper:
             "shoulder_flexion": shoulder_flexion,
             "shoulder_abduction": shoulder_abduction,
             "elbow_flexion": elbow,
+            # Phase 4 has no intent for this DOF yet. Keep it at the measured
+            # startup position; future IMU control belongs above the mapper.
+            "upper_arm_rotation": self.startup_positions["upper_arm_rotation"],
         }
 
     def _shoulder_target(self, name: str, semantic_angle: float | None) -> float:

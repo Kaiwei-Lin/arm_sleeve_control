@@ -68,7 +68,12 @@ def test_missing_channel_is_rejected() -> None:
 
 
 def test_mapper_holds_shoulders_and_passes_absolute_elbow_angle() -> None:
-    startup = {"shoulder_flexion": 0.2, "shoulder_abduction": -0.3, "elbow_flexion": 1.0}
+    startup = {
+        "shoulder_flexion": 0.2,
+        "shoulder_abduction": -0.3,
+        "elbow_flexion": 1.0,
+        "upper_arm_rotation": 0.4,
+    }
     mapper = ArmMapper(elbow_config(deadzone=0.0), startup)
     low = mapper.map(MotionIntent(1.0, elbow_flexion=0.0))
     middle = mapper.map(MotionIntent(1.0, elbow_flexion=0.5))
@@ -78,6 +83,7 @@ def test_mapper_holds_shoulders_and_passes_absolute_elbow_angle() -> None:
     assert high["elbow_flexion"] == pytest.approx(1.0)
     assert high["shoulder_flexion"] == startup["shoulder_flexion"]
     assert high["shoulder_abduction"] == startup["shoulder_abduction"]
+    assert high["upper_arm_rotation"] == startup["upper_arm_rotation"]
 
 
 def test_watchdog_fresh_stale_hard_and_invalid_timestamp() -> None:
@@ -113,5 +119,6 @@ def test_fake_end_to_end_uses_safety_and_only_moves_elbow() -> None:
 
     assert states["shoulder_flexion"].position == startup["shoulder_flexion"]
     assert states["shoulder_abduction"].position == startup["shoulder_abduction"]
+    assert states["upper_arm_rotation"].position == startup["upper_arm_rotation"]
     assert safe["elbow_flexion"] == pytest.approx(math.radians(90))
     assert robot.events == ["connect", "enable", "disable", "close"]

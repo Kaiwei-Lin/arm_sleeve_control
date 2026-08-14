@@ -10,8 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sleeve_arm.config import DEFAULT_CONFIG_PATH, load_robot_config
 from sleeve_arm.control import SafeArmController
-from sleeve_arm.domain import JOINT_NAMES, JointCommand
+from sleeve_arm.domain import JointCommand
 from sleeve_arm.robot import DyMotorArm
+
+
+THREE_JOINT_NAMES = ("shoulder_flexion", "shoulder_abduction", "elbow_flexion")
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,7 +63,7 @@ def main() -> int:
         targets = controller.preview_positions(command.as_dict(), dt=args.command_dt)
 
         print("Three-joint relative move preview (one SDK batch):")
-        for name in JOINT_NAMES:
+        for name in THREE_JOINT_NAMES:
             joint = config.joints[name]
             print(f"\n{name} (motor {joint.motor_id}, CAN {joint.can_id})")
             print(f"  current: {states[name].position:.6f} rad")
@@ -75,10 +78,10 @@ def main() -> int:
             print("\nEXECUTE requested: sending all three targets with one batch flush.")
             controller.enable()
             sent = controller.set_joint_positions(targets, dt=args.command_dt)
-            for name in JOINT_NAMES:
+            for name in THREE_JOINT_NAMES:
                 print(f"Sent {name}: {sent[name]:.6f} rad")
             final = controller.monitor(args.monitor_seconds)
-            for name in JOINT_NAMES:
+            for name in THREE_JOINT_NAMES:
                 print(f"Final {name}: {final[name].position:.6f} rad; error={final[name].error}")
     except KeyboardInterrupt:
         print("\nInterrupted; entering safe shutdown.")

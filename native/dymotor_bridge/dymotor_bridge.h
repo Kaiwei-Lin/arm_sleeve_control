@@ -17,7 +17,8 @@ enum ArmJointIndex {
     ARM_JOINT_SHOULDER_FLEXION = 0,
     ARM_JOINT_SHOULDER_ABDUCTION = 1,
     ARM_JOINT_ELBOW_FLEXION = 2,
-    ARM_JOINT_COUNT = 3
+    ARM_JOINT_UPPER_ARM_ROTATION = 3,
+    ARM_JOINT_COUNT = 4
 };
 
 typedef struct ArmOpenConfig {
