@@ -127,6 +127,29 @@ def main() -> int:
             )
         watchdog = SensorWatchdog(phase3.sensor_timeout_ms, phase3.hard_timeout_ms)
 
+        robot_config = load_robot_config(args.robot_config)
+        if args.robot == "dymotor" and args.execute:
+            for name in ("shoulder_flexion", "shoulder_abduction", "elbow_flexion"):
+                joint = robot_config.joints[name]
+                if joint.zero_position is None or joint.min_position is None or joint.max_position is None:
+                    raise ValueError(
+                        f"{name}: absolute model control requires calibrated "
+                        "zero_position, min_position, and max_position"
+                    )
+        robot = (
+            FakeRobotArm(robot_config)
+            if args.robot == "fake"
+            else DyMotorArm(robot_config, args.library, diagnostics=args.bridge_diagnostics)
+        )
+        controller = SafeArmController(robot, robot_config)
+        controller.connect()
+        controller.read_joint_states()
+        if isinstance(robot, DyMotorArm):
+            print(f"loaded_so: {robot.loaded_library_path}")
+        state = RuntimeState.ROBOT_READY
+
+        # Match the proven Phase 1 tools: connect DyMotor before opening serial
+        # sources or importing/initializing the external model. Servo stays Off.
         source = (
             FakeSleeveSource()
             if args.sleeve == "fake"
@@ -159,27 +182,6 @@ def main() -> int:
         if sample is None or intent is None:
             raise RuntimeError(f"no valid model prediction before readiness timeout: {locals().get('last_error')}")
         state = RuntimeState.SENSOR_READY
-
-        robot_config = load_robot_config(args.robot_config)
-        if args.robot == "dymotor" and args.execute:
-            for name in ("shoulder_flexion", "shoulder_abduction", "elbow_flexion"):
-                joint = robot_config.joints[name]
-                if joint.zero_position is None or joint.min_position is None or joint.max_position is None:
-                    raise ValueError(
-                        f"{name}: absolute model control requires calibrated "
-                        "zero_position, min_position, and max_position"
-                    )
-        robot = (
-            FakeRobotArm(robot_config)
-            if args.robot == "fake"
-            else DyMotorArm(robot_config, args.library, diagnostics=args.bridge_diagnostics)
-        )
-        controller = SafeArmController(robot, robot_config)
-        controller.connect()
-        controller.read_joint_states()
-        if isinstance(robot, DyMotorArm):
-            print(f"loaded_so: {robot.loaded_library_path}")
-        state = RuntimeState.ROBOT_READY
 
         startup_states = controller.read_joint_states()
         startup = {name: item.position for name, item in startup_states.items()}

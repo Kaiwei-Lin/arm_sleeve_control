@@ -154,8 +154,10 @@ def test_unstable_startup_feedback_is_rejected(config: RobotConfig) -> None:
                 return replace(state, position=0.1 * self.reads)
             return state
 
-    robot = MovingRobot(config)
-    controller = SafeArmController(robot, config)
+    elbow = replace(config.joints["elbow_flexion"], max_position_step=0.01)
+    stability_config = replace(config, joints={**config.joints, "elbow_flexion": elbow})
+    robot = MovingRobot(stability_config)
+    controller = SafeArmController(robot, stability_config)
 
     with pytest.raises(SafetyError, match="startup feedback is not stable"):
         controller.connect()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import math
 import sys
 from dataclasses import dataclass, replace
@@ -16,6 +17,7 @@ from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBas
 from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibration_samples
 from sleeve_arm.robot import FakeRobotArm
 from tools.debug_model_mapping import manual_intent
+from tools import run_model_control
 from tools.run_model_control import prepare_flexarm_predictor
 from tools.test_flex_model import replay
 
@@ -380,6 +382,12 @@ def test_manual_backward_model_output_uses_absolute_joint_semantics() -> None:
     assert intent.shoulder_flexion_rad == pytest.approx(math.radians(-30.0))
     assert intent.shoulder_abduction_rad == 0.0
     assert intent.elbow_flexion == pytest.approx(math.radians(90.0))
+
+
+def test_robot_connect_precedes_sensor_and_external_model_initialization() -> None:
+    runtime = inspect.getsource(run_model_control.main)
+    assert runtime.index("controller.connect()") < runtime.index("source.start()")
+    assert runtime.index("controller.connect()") < runtime.index("prepare_flexarm_predictor(")
 
 
 def test_model_instance_is_reused_across_predictions() -> None:
