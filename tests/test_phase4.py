@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import math
-import json
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pytest
 
@@ -33,42 +33,49 @@ def model_config(**changes) -> FlexModelConfig:
     return FlexModelConfig(**values)
 
 
-def test_default_real_model_config_rejects_missing_calibration() -> None:
-    with pytest.raises(ValueError, match="max_deg|three non-null"):
-        load_phase4_config()
-
-
-def test_missing_model_module_has_clear_error() -> None:
-    with pytest.raises(RuntimeError, match="Expected module: module_that_does_not_exist"):
-        FlexModelPredictor(model_config(model_module="module_that_does_not_exist"))
-
-
-def test_phase4_loads_generated_calibration_file(tmp_path) -> None:
-    calibration = tmp_path / "flex_calibration.json"
-    calibration.write_text(json.dumps({
-        "calibration_baseline": [1, 2, 3],
-        "calibration_scale": [4, 5, 6],
-        "trial_rest": [7, 8, 9],
-    }), encoding="utf-8")
+def write_phase4_config(
+    tmp_path: Path,
+    *,
+    sleeve_channels: str = "[3, 4, 5]",
+    calibration_seconds: str = "3",
+) -> Path:
+    (tmp_path / "models").mkdir(exist_ok=True)
     config = tmp_path / "phase4.yaml"
     config.write_text(f"""
 predictor:
-  backend: flex_model
-  model_module: flex_model_0003
-  model_class: FlexPredictor
-  sleeve_channels: [2, 3, 4]
-  calibration_file: {calibration.as_posix()}
-  min_action_confidence: 0.6
-  action_stability: {{required_consecutive_frames: 3}}
+  backend: flexarm_estimator
+  model_dir: models
+  sleeve_channels: {sleeve_channels}
+  calibration_file: runtime/calibration.json
+  calibration_seconds: {calibration_seconds}
   angle: {{min_deg: 0, max_deg: 90}}
 phase4_validation:
   max_consecutive_prediction_errors: 3
 """, encoding="utf-8")
+    return config
+
+
+def test_phase4_loads_flexarm_paths_relative_to_config(tmp_path: Path) -> None:
+    model_dir = tmp_path / "models"
+    config = write_phase4_config(tmp_path)
     loaded = load_phase4_config(config)
     assert loaded.flex_model is not None
-    assert loaded.flex_model.baseline == (1.0, 2.0, 3.0)
-    assert loaded.flex_model.scale == (4.0, 5.0, 6.0)
-    assert loaded.flex_model.trial_rest == (7.0, 8.0, 9.0)
+    assert loaded.flex_model.model_dir == model_dir.resolve()
+    assert loaded.flex_model.calibration_file == (tmp_path / "runtime/calibration.json").resolve()
+    assert loaded.flex_model.sleeve_channels == (3, 4, 5)
+    assert loaded.flex_model.calibration_seconds == 3.0
+
+
+def test_phase4_rejects_wrong_flexarm_channels(tmp_path: Path) -> None:
+    config = write_phase4_config(tmp_path, sleeve_channels="[2, 3, 4]")
+    with pytest.raises(ValueError, match=r"exactly \[3, 4, 5\]"):
+        load_phase4_config(config)
+
+
+def test_phase4_rejects_non_positive_calibration_duration(tmp_path: Path) -> None:
+    config = write_phase4_config(tmp_path, calibration_seconds="0")
+    with pytest.raises(ValueError, match="calibration_seconds must be positive"):
+        load_phase4_config(config)
 
 
 def test_latest_flex_reader_returns_ch2_ch3_ch4_in_order() -> None:

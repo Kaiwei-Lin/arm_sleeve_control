@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -120,14 +119,10 @@ class Phase3Config:
 
 @dataclass(frozen=True)
 class FlexModelConfig:
-    model_module: str
-    model_class: str
+    model_dir: Path
     sleeve_channels: tuple[int, int, int]
-    baseline: tuple[float, float, float]
-    scale: tuple[float, float, float]
-    trial_rest: tuple[float, float, float]
-    min_action_confidence: float
-    required_consecutive_frames: int
+    calibration_file: Path
+    calibration_seconds: float
     angle_min_deg: float
     angle_max_deg: float
 
@@ -368,60 +363,41 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
     with config_path.open("r", encoding="utf-8") as stream:
         raw = yaml.safe_load(stream)
     predictor = raw.get("predictor") if isinstance(raw, dict) else None
-    stability = predictor.get("action_stability") if isinstance(predictor, dict) else None
     angle = predictor.get("angle") if isinstance(predictor, dict) else None
     validation = raw.get("phase4_validation") if isinstance(raw, dict) else None
-    if not all(isinstance(item, dict) for item in (predictor, stability, angle, validation)):
-        raise ValueError("phase4 config requires predictor stability/angle and phase4_validation")
+    if not all(isinstance(item, dict) for item in (predictor, angle, validation)):
+        raise ValueError("phase4 config requires predictor.angle and phase4_validation mappings")
 
-    def triple(name: str, values: Any) -> tuple[float, float, float]:
-        if not isinstance(values, list) or len(values) != 3 or any(value is None for value in values):
-            raise ValueError(f"predictor.calibration.{name} requires exactly three non-null values")
-        result = tuple(float(value) for value in values)
-        if not all(math.isfinite(value) for value in result):
-            raise ValueError(f"predictor.calibration.{name} values must be finite")
-        return result  # type: ignore[return-value]
-
-    channels_raw = predictor.get("sleeve_channels")
-    if not isinstance(channels_raw, list) or len(channels_raw) != 3:
-        raise ValueError("predictor.sleeve_channels requires exactly three channels")
-    channels = tuple(int(value) for value in channels_raw)
-    if channels != (2, 3, 4):
-        raise ValueError("FlexPredictor sleeve_channels must be exactly [2, 3, 4]")
     backend = str(predictor.get("backend", ""))
     flex_model = None
-    if backend == "flex_model":
-        maximum = angle.get("max_deg")
-        if maximum is None:
-            raise ValueError("predictor.angle.max_deg must be configured for Phase 4")
+    if backend == "flexarm_estimator":
+        channels_raw = predictor.get("sleeve_channels")
+        if not isinstance(channels_raw, list) or tuple(int(value) for value in channels_raw) != (3, 4, 5):
+            raise ValueError("FlexArmEstimator sleeve_channels must be exactly [3, 4, 5]")
+        model_dir_value = predictor.get("model_dir")
+        if not model_dir_value:
+            raise ValueError("predictor.model_dir is required for flexarm_estimator")
+        model_dir = Path(str(model_dir_value)).expanduser()
+        if not model_dir.is_absolute():
+            model_dir = config_path.parent / model_dir
+        model_dir = model_dir.resolve()
+        if not model_dir.is_dir():
+            raise ValueError(f"FlexArm model directory was not found: {model_dir}")
         calibration_value = predictor.get("calibration_file")
         if not calibration_value:
-            raise ValueError("predictor.calibration_file is required for flex_model")
-        calibration_path = Path(str(calibration_value)).expanduser()
-        if not calibration_path.is_absolute():
-            calibration_path = PROJECT_ROOT / calibration_path
-        try:
-            with calibration_path.resolve().open("r", encoding="utf-8") as stream:
-                calibration = json.load(stream)
-        except FileNotFoundError as exc:
-            raise ValueError(
-                f"Flex calibration file was not found: {calibration_path.resolve()}. "
-                "Run: python tools/calibrate_flex_model.py"
-            ) from exc
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"could not read Flex calibration file {calibration_path.resolve()}: {exc}") from exc
-        if not isinstance(calibration, dict):
-            raise ValueError("Flex calibration JSON must contain an object")
+            raise ValueError("predictor.calibration_file is required for flexarm_estimator")
+        calibration_file = Path(str(calibration_value)).expanduser()
+        if not calibration_file.is_absolute():
+            calibration_file = config_path.parent / calibration_file
+        calibration_seconds = float(predictor.get("calibration_seconds", 3.0))
+        minimum = float(angle.get("min_deg", 0.0))
+        maximum = float(angle.get("max_deg", 180.0))
         flex_model = FlexModelConfig(
-            model_module=str(predictor.get("model_module", "")),
-            model_class=str(predictor.get("model_class", "")),
-            sleeve_channels=channels,  # type: ignore[arg-type]
-            baseline=triple("calibration_baseline", calibration.get("calibration_baseline")),
-            scale=triple("calibration_scale", calibration.get("calibration_scale")),
-            trial_rest=triple("trial_rest", calibration.get("trial_rest")),
-            min_action_confidence=float(predictor.get("min_action_confidence", 0.6)),
-            required_consecutive_frames=int(stability.get("required_consecutive_frames", 3)),
-            angle_min_deg=float(angle.get("min_deg", 0.0)),
+            model_dir=model_dir,
+            sleeve_channels=(3, 4, 5),
+            calibration_file=calibration_file.resolve(),
+            calibration_seconds=calibration_seconds,
+            angle_min_deg=minimum,
             angle_max_deg=float(maximum),
         )
     config = Phase4Config(
@@ -429,22 +405,15 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
         flex_model=flex_model,
         max_consecutive_prediction_errors=int(validation.get("max_consecutive_prediction_errors", 3)),
     )
-    values = []
+    if config.predictor_backend not in ("flexarm_estimator", "rule_based"):
+        raise ValueError("predictor.backend must be flexarm_estimator or rule_based")
     if flex_model is not None:
-        values.extend((flex_model.min_action_confidence, flex_model.angle_min_deg, flex_model.angle_max_deg))
-    if config.predictor_backend not in ("flex_model", "rule_based"):
-        raise ValueError("predictor.backend must be flex_model or rule_based")
-    if not all(math.isfinite(value) for value in values):
-        raise ValueError("phase4 numeric values must be finite")
-    if flex_model is not None:
-        if not flex_model.model_module or not flex_model.model_class:
-            raise ValueError("model_module and model_class are required")
-        if not 0 <= flex_model.min_action_confidence <= 1:
-            raise ValueError("min_action_confidence must be in [0, 1]")
-        if flex_model.required_consecutive_frames < 1:
-            raise ValueError("required_consecutive_frames must be at least 1")
-        if  flex_model.angle_max_deg < flex_model.angle_min_deg:
-            raise ValueError("angle range must satisfy 0 <= min_deg <= max_deg")
+        if not math.isfinite(flex_model.calibration_seconds) or flex_model.calibration_seconds <= 0:
+            raise ValueError("predictor.calibration_seconds must be positive and finite")
+        if not all(math.isfinite(value) for value in (flex_model.angle_min_deg, flex_model.angle_max_deg)):
+            raise ValueError("predictor angle values must be finite")
+        if flex_model.angle_max_deg < flex_model.angle_min_deg:
+            raise ValueError("angle range must satisfy min_deg <= max_deg")
     if config.max_consecutive_prediction_errors < 1:
         raise ValueError("max_consecutive_prediction_errors must be at least 1")
     return config
