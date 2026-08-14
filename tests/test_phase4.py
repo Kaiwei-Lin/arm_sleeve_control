@@ -16,6 +16,7 @@ from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBas
 from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibration_samples
 from sleeve_arm.robot import FakeRobotArm
 from tools.debug_model_mapping import manual_intent
+from tools.run_model_control import prepare_flexarm_predictor
 
 
 def model_config(**changes) -> FlexModelConfig:
@@ -204,6 +205,73 @@ def test_calibrate_estimator_saves_then_resets(tmp_path: Path) -> None:
         ("save", output),
         "reset",
     ]
+
+
+class RecordingPredictor:
+    def __init__(self) -> None:
+        self.calibration_rows: np.ndarray | None = None
+        self.calibration_output: Path | None = None
+        self.reused_path: Path | None = None
+
+    def calibrate(self, rows: np.ndarray, output: Path) -> SimpleNamespace:
+        self.calibration_rows = rows
+        self.calibration_output = output
+        return SimpleNamespace(
+            baseline=(30.5, 40.5, 50.5),
+            scale=(1.0, 1.0, 1.0),
+            sample_count=len(rows),
+        )
+
+    def reuse_calibration(self, path: Path) -> None:
+        self.reused_path = path
+
+
+def test_prepare_predictor_live_calibrates_by_default(tmp_path: Path) -> None:
+    config = model_config(
+        calibration_file=tmp_path / "configured.json",
+        calibration_seconds=1.0,
+    )
+    predictor = RecordingPredictor()
+    messages: list[str] = []
+    prepared = prepare_flexarm_predictor(
+        SequenceSleeveSource([
+            SleeveFrame(1.0, (10, 20, 30, 40, 50)),
+            SleeveFrame(2.0, (11, 21, 31, 41, 51)),
+        ]),
+        config,
+        predictor=predictor,
+        reuse_calibration=False,
+        calibration_seconds=0.5,
+        calibration_output=tmp_path / "override.json",
+        input_fn=lambda _: "",
+        print_fn=messages.append,
+        monotonic=SequenceClock([0.0, 0.1, 0.2, 0.5]),
+    )
+    assert prepared is predictor
+    assert predictor.calibration_rows is not None
+    assert predictor.calibration_rows.tolist() == [
+        [30.0, 40.0, 50.0],
+        [31.0, 41.0, 51.0],
+    ]
+    assert predictor.calibration_output == tmp_path / "override.json"
+    assert predictor.reused_path is None
+    assert any("Calibration complete" in message for message in messages)
+
+
+def test_prepare_predictor_reuses_only_when_explicit(tmp_path: Path) -> None:
+    path = tmp_path / "saved.json"
+    predictor = RecordingPredictor()
+    prepared = prepare_flexarm_predictor(
+        SequenceSleeveSource([]),
+        model_config(calibration_file=path),
+        predictor=predictor,
+        reuse_calibration=True,
+        input_fn=lambda _: pytest.fail("reuse must not prompt"),
+        print_fn=lambda _: None,
+    )
+    assert prepared is predictor
+    assert predictor.reused_path == path
+    assert predictor.calibration_rows is None
 
 
 @dataclass

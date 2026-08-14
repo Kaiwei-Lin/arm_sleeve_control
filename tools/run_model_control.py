@@ -5,19 +5,22 @@ import argparse
 import math
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum, auto
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sleeve_arm.config import (
     DEFAULT_CONFIG_PATH, DEFAULT_PHASE3_CONFIG_PATH, DEFAULT_PHASE4_CONFIG_PATH,
     DEFAULT_SENSOR_CONFIG_PATH, load_phase3_config, load_phase4_config,
-    load_robot_config, load_sensor_config,
+    load_robot_config, load_sensor_config, FlexModelConfig,
 )
 from sleeve_arm.control import ArmMapper, SafeArmController, SensorWatchdog
 from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBasedPredictor
+from sleeve_arm.predictor.calibration import collect_calibration_samples
 from sleeve_arm.robot import DyMotorArm, FakeRobotArm
 from sleeve_arm.sources import FakeSleeveSource, create_sleeve_source
 from sleeve_arm.sync import SensorSynchronizer
@@ -34,6 +37,45 @@ class RuntimeState(Enum):
     STOPPING = auto()
 
 
+def prepare_flexarm_predictor(
+    source: Any,
+    config: FlexModelConfig,
+    *,
+    predictor: FlexModelPredictor | Any | None = None,
+    reuse_calibration: bool = False,
+    calibration_seconds: float | None = None,
+    calibration_output: Path | None = None,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> FlexModelPredictor:
+    prepared = FlexModelPredictor(config) if predictor is None else predictor
+    output = config.calibration_file if calibration_output is None else calibration_output
+    if reuse_calibration:
+        prepared.reuse_calibration(output)
+        print_fn(f"Reused FlexArm calibration: {output}")
+        return prepared
+
+    duration = config.calibration_seconds if calibration_seconds is None else calibration_seconds
+    input_fn(
+        f"Let the arm hang naturally and keep still. Press Enter to collect "
+        f"{duration:g} seconds of calibration data: "
+    )
+    rows = collect_calibration_samples(
+        source,
+        config.sleeve_channels,
+        duration,
+        monotonic=monotonic,
+    )
+    calibration = prepared.calibrate(rows, output)
+    print_fn(
+        f"Calibration complete: samples={calibration.sample_count}, "
+        f"baseline={list(calibration.baseline)}, scale={list(calibration.scale)}"
+    )
+    print_fn(f"Calibration saved to: {output}")
+    return prepared
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Flex model + CH2 elbow control; real motion requires --execute.")
     parser.add_argument("--sleeve", choices=("fake", "real"), default="real")
@@ -44,6 +86,13 @@ def main() -> int:
     parser.add_argument("--sensor-config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
     parser.add_argument("--phase3-config", type=Path, default=DEFAULT_PHASE3_CONFIG_PATH)
     parser.add_argument("--phase4-config", type=Path, default=DEFAULT_PHASE4_CONFIG_PATH)
+    parser.add_argument(
+        "--reuse-calibration",
+        action="store_true",
+        help="reuse the configured saved calibration instead of collecting a fresh baseline",
+    )
+    parser.add_argument("--calibration-seconds", type=float)
+    parser.add_argument("--calibration-output", type=Path)
     parser.add_argument("--library", type=Path)
     parser.add_argument(
         "--bridge-diagnostics",
@@ -53,6 +102,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.duration is not None and args.duration <= 0:
         parser.error("--duration must be positive")
+    if args.calibration_seconds is not None and args.calibration_seconds <= 0:
+        parser.error("--calibration-seconds must be positive")
     if args.robot == "dymotor" and args.execute and args.sleeve != "real":
         parser.error("real robot execution requires --sleeve real")
 
@@ -62,8 +113,11 @@ def main() -> int:
     try:
         phase3 = load_phase3_config(args.phase3_config)
         phase4 = load_phase4_config(args.phase4_config)
-        if phase4.predictor_backend != "flex_model":
-            raise ValueError("run_model_control requires predictor.backend=flex_model; use run_sleeve_elbow for rule_based")
+        if phase4.predictor_backend != "flexarm_estimator":
+            raise ValueError(
+                "run_model_control requires predictor.backend=flexarm_estimator; "
+                "use run_sleeve_elbow for rule_based"
+            )
         assert phase4.flex_model is not None
         elbow_config = phase3.elbow
         if args.sleeve == "fake" and elbow_config.input_min is None:
@@ -72,6 +126,39 @@ def main() -> int:
                 angle_min_deg=0.0, angle_max_deg=90.0,
             )
         watchdog = SensorWatchdog(phase3.sensor_timeout_ms, phase3.hard_timeout_ms)
+
+        source = (
+            FakeSleeveSource()
+            if args.sleeve == "fake"
+            else create_sleeve_source(load_sensor_config(args.sensor_config))
+        )
+        source.start()
+        shoulder_predictor = prepare_flexarm_predictor(
+            source,
+            phase4.flex_model,
+            reuse_calibration=args.reuse_calibration,
+            calibration_seconds=args.calibration_seconds,
+            calibration_output=args.calibration_output,
+        )
+        predictor = ArmMotionPredictor(RuleBasedPredictor(elbow_config), shoulder_predictor)
+
+        sync = SensorSynchronizer()
+        readiness_deadline = time.monotonic() + phase3.hard_timeout_ms / 1000.0
+        sample = intent = None
+        while time.monotonic() < readiness_deadline:
+            frame = source.latest()
+            if frame is not None:
+                sample = sync.synchronize(frame)
+                try:
+                    intent = predictor.predict(sample)
+                    break
+                except Exception as exc:
+                    invalid += 1
+                    last_error = exc
+            time.sleep(0.001)
+        if sample is None or intent is None:
+            raise RuntimeError(f"no valid model prediction before readiness timeout: {locals().get('last_error')}")
+        state = RuntimeState.SENSOR_READY
 
         robot_config = load_robot_config(args.robot_config)
         if args.robot == "dymotor" and args.execute:
@@ -93,32 +180,6 @@ def main() -> int:
         if isinstance(robot, DyMotorArm):
             print(f"loaded_so: {robot.loaded_library_path}")
         state = RuntimeState.ROBOT_READY
-
-        # Keep the vendor SDK load/connect order identical to the proven Phase 1
-        # tools. Model initialization is still completed before Sensor start or
-        # Servo On, so a model failure remains motion-free.
-        shoulder_predictor = FlexModelPredictor(phase4.flex_model)
-        predictor = ArmMotionPredictor(RuleBasedPredictor(elbow_config), shoulder_predictor)
-
-        source = FakeSleeveSource() if args.sleeve == "fake" else create_sleeve_source(load_sensor_config(args.sensor_config))
-        sync = SensorSynchronizer()
-        source.start()
-        readiness_deadline = time.monotonic() + phase3.hard_timeout_ms / 1000.0
-        sample = intent = None
-        while time.monotonic() < readiness_deadline:
-            frame = source.latest()
-            if frame is not None:
-                sample = sync.synchronize(frame)
-                try:
-                    intent = predictor.predict(sample)
-                    break
-                except Exception as exc:
-                    invalid += 1
-                    last_error = exc
-            time.sleep(0.001)
-        if sample is None or intent is None:
-            raise RuntimeError(f"no valid model prediction before readiness timeout: {locals().get('last_error')}")
-        state = RuntimeState.SENSOR_READY
 
         startup_states = controller.read_joint_states()
         startup = {name: item.position for name, item in startup_states.items()}
@@ -174,7 +235,6 @@ def main() -> int:
                         last_frame_timestamp = sample.timestamp
                         state = RuntimeState.RUNNING
                 if now - last_print >= 1.0:
-                    action = None if intent.action is None else intent.action.name
                     states = controller.read_joint_states()
                     positions = {name: value.position for name, value in states.items()}
                     tracking = {name: last_safe[name] - positions[name] for name in last_safe}
@@ -182,8 +242,10 @@ def main() -> int:
                         f"state={state.name} sleeve_fps={source.stats.estimated_fps:.1f} "
                         f"control_fps={cycles / max(now-started, 1e-9):.1f} "
                         f"model_fps={predictions / max(now-started, 1e-9):.1f} age_ms={age*1000:.1f} "
-                        f"flex={shoulder_predictor.last_flex} action={action} confidence={intent.confidence:.3f} "
-                        f"angle_deg={intent.angle_deg:.2f} inference_ms={intent.inference_ms:.3f} "
+                        f"flex={shoulder_predictor.last_flex} action={intent.model_action} "
+                        f"action_conf={intent.confidence:.3f} angle_conf={intent.angle_confidence:.3f} "
+                        f"moving={intent.moving} angle_deg={intent.angle_deg:.2f} "
+                        f"inference_ms={intent.inference_ms:.3f} "
                         f"targets_rad={last_safe} positions_rad={positions} tracking_rad={tracking} "
                         f"invalid={invalid} stale={stale}"
                     )

@@ -12,8 +12,8 @@ predictor:
   calibration_seconds: 3.0
 
   angle:
-    min_deg: -180
-    # Required: fill from the actual model training-label range.
+    min_deg: 0
+    # Conservative adapter validation bound; model-specific ranges remain in metadata.json.
     max_deg: 180
 
 phase4_validation:
