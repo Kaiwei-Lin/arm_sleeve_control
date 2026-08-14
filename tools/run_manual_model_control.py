@@ -24,6 +24,11 @@ def main() -> int:
     parser.add_argument("--action", choices=("Forward", "Lateral", "Backward"), required=True)
     parser.add_argument("--shoulder-angle-deg", type=float, required=True)
     parser.add_argument("--elbow-angle-deg", type=float, required=True)
+    parser.add_argument(
+        "--upper-arm-rotation-deg",
+        type=float,
+        help="absolute semantic ID24 rotation; omitted means hold startup position",
+    )
     parser.add_argument("--robot", choices=("fake", "dymotor"), default="fake")
     parser.add_argument("--execute", action="store_true", help="Servo On and move; otherwise PVCT/preview only")
     parser.add_argument("--timeout", type=float, default=10.0)
@@ -35,6 +40,8 @@ def main() -> int:
 
     if not all(math.isfinite(value) for value in (args.shoulder_angle_deg, args.elbow_angle_deg)):
         parser.error("angles must be finite")
+    if args.upper_arm_rotation_deg is not None and not math.isfinite(args.upper_arm_rotation_deg):
+        parser.error("--upper-arm-rotation-deg must be finite")
     if args.shoulder_angle_deg < 0:
         parser.error("--shoulder-angle-deg is a non-negative regression magnitude")
     if not math.isfinite(args.timeout) or args.timeout <= 0:
@@ -63,11 +70,17 @@ def main() -> int:
         states = controller.read_joint_states()
         startup = {name: state.position for name, state in states.items()}
         mapped = ArmMapper(phase3.elbow, startup).map(intent)
+        if args.upper_arm_rotation_deg is not None:
+            mapped["upper_arm_rotation"] = math.radians(args.upper_arm_rotation_deg)
         goals = {name: clamp_position(config.joints[name], mapped[name]) for name in JOINT_NAMES}
         first = controller.preview_positions(mapped, dt=period)
 
+        upper_arm_output = (
+            "hold startup" if args.upper_arm_rotation_deg is None
+            else f"{args.upper_arm_rotation_deg:.3f} deg absolute"
+        )
         print(f"Manual output: action={args.action}, shoulder={args.shoulder_angle_deg:.3f} deg, "
-              f"elbow={args.elbow_angle_deg:.3f} deg")
+              f"elbow={args.elbow_angle_deg:.3f} deg, upper_arm_rotation={upper_arm_output}")
         for name in JOINT_NAMES:
             joint = config.joints[name]
             print(f"\n{name} (motor {joint.motor_id}, CAN {joint.can_id})")

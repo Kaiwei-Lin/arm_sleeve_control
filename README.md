@@ -359,12 +359,12 @@ The output separates the absolute semantic mapper request, the SafetyController-
 To pass the same manual output through the production robot lifecycle, first preview with FakeRobot, then use read-only DyMotor preview, and only then explicitly execute:
 
 ```bash
-python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30
-python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30 --robot dymotor
-python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30 --robot dymotor --execute
+python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30 --upper-arm-rotation-deg 10
+python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30 --upper-arm-rotation-deg 10 --robot dymotor
+python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30 --upper-arm-rotation-deg 10 --robot dymotor --execute
 ```
 
-Real execution refuses to arm unless every joint has calibrated zero/min/max. No command-step or velocity limit is required: the first enabled command holds measured startup positions, then the complete absolute targets are passed through `SafeArmController` position limits and sent as one three-joint batch. Ctrl+C, feedback faults, and timeouts all enter Servo Off and close.
+`--upper-arm-rotation-deg` is an absolute semantic angle. It is clamped by ID24's calibrated `min_position/max_position`, then converted using `SDK target = zero_position + direction × semantic target`. Omitting it keeps ID24 at its measured startup position. Real execution requires calibrated zero/min/max for all four joints. The first enabled command holds all measured startup positions, then all four targets pass through `SafeArmController` and one SDK batch. Ctrl+C, feedback faults, and timeouts all enter Servo Off and close.
 
 Phase 4 保留 Phase 3 的 CH2 肘部规则，并用 pip 安装的 `flex_model_0003.FlexPredictor` 生成肩部人体语义：
 

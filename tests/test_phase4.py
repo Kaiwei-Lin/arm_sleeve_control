@@ -17,7 +17,7 @@ from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBas
 from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibration_samples
 from sleeve_arm.robot import FakeRobotArm
 from tools.debug_model_mapping import manual_intent
-from tools import run_model_control
+from tools import run_manual_model_control, run_model_control
 from tools.run_model_control import prepare_flexarm_predictor
 from tools.test_flex_model import replay
 
@@ -388,6 +388,22 @@ def test_manual_backward_model_output_uses_absolute_joint_semantics() -> None:
     assert intent.shoulder_flexion_rad == pytest.approx(math.radians(-30.0))
     assert intent.shoulder_abduction_rad == 0.0
     assert intent.elbow_flexion == pytest.approx(math.radians(90.0))
+
+
+def test_manual_runtime_accepts_absolute_upper_arm_rotation(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", [
+        "run_manual_model_control.py",
+        "--action", "Forward",
+        "--shoulder-angle-deg", "5",
+        "--elbow-angle-deg", "30",
+        "--upper-arm-rotation-deg", "10",
+    ])
+
+    assert run_manual_model_control.main() == 0
+    output = capsys.readouterr().out
+    assert "upper_arm_rotation=10.000 deg absolute" in output
+    assert "upper_arm_rotation (motor 24, CAN 2)" in output
+    assert "mapper target:      0.174533 rad" in output
 
 
 def test_robot_connect_precedes_sensor_and_external_model_initialization() -> None:

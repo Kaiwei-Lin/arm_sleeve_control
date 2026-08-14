@@ -11,16 +11,16 @@ sensors:
     expected_fields: 11
 
   imu1:
-    enabled: false
+    enabled: true
     backend: imu770_serial
-    port: null
+    port: COM11
     baudrate: 460800
     timeout_s: 0.1
 
   imu2:
     enabled: false
     backend: imu770_serial
-    port: null
+    port: COM14
     baudrate: 460800
     timeout_s: 0.1
 
