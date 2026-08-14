@@ -7,12 +7,18 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
 
-from sleeve_arm.config import PROJECT_ROOT, RobotConfig
+from sleeve_arm.config import PROJECT_ROOT, JointConfig, RobotConfig
 from sleeve_arm.domain.joint import JOINT_NAMES, JointState
 from sleeve_arm.robot.base import RobotArm, RobotError
 
 
 _JOINT_INDEX = {name: index for index, name in enumerate(JOINT_NAMES)}
+
+
+def semantic_to_sdk_position(joint: JointConfig, semantic_position: float) -> float:
+    """Apply the exact semantic-to-vendor position transform without I/O."""
+    zero = 0.0 if joint.zero_position is None else joint.zero_position
+    return zero + joint.direction * float(semantic_position)
 
 
 class _ArmOpenConfig(ctypes.Structure):
@@ -205,8 +211,7 @@ class DyMotorArm(RobotArm):
         for name, semantic_position in targets.items():
             index = self._joint_index(name)
             joint = self.config.joints[name]
-            zero = 0.0 if joint.zero_position is None else joint.zero_position
-            positions[index] = zero + joint.direction * float(semantic_position)
+            positions[index] = semantic_to_sdk_position(joint, semantic_position)
             mask |= 1 << index
         self._check(lib.arm_set_joint_positions(positions, mask), "arm_set_joint_positions")
 

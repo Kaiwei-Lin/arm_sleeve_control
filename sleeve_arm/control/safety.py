@@ -21,7 +21,6 @@ def clamp_position(config: JointConfig, target: float) -> float:
         target = max(target, config.min_position)
     if config.max_position is not None:
         target = min(target, config.max_position)
-    print(f"{config.name}: clamped target position to {target}")
     return target
 
 

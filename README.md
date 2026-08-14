@@ -268,6 +268,29 @@ python tools/run_sleeve_elbow.py --sleeve real --robot dymotor --execute
 
 ## Phase 4 — FlexPredictor Model Integration
 
+### Offline mapper diagnostic
+
+To inspect a manually supplied model result without opening any Sleeve, serial port, bridge library, or robot:
+
+```bash
+python tools/debug_model_mapping.py \
+    --action Backward \
+    --shoulder-angle-deg 30 \
+    --elbow-angle-deg 90
+```
+
+The output separates the absolute semantic mapper request, the SafetyController-equivalent result for one control period, and the final raw SDK request after `zero_position + direction × semantic_position`. Optional `--current-*-deg` arguments simulate the current semantic joint feedback used by step/velocity limiting.
+
+To pass the same manual output through the production robot lifecycle, first preview with FakeRobot, then use read-only DyMotor preview, and only then explicitly execute:
+
+```bash
+python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30
+python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30 --robot dymotor
+python tools/run_manual_model_control.py --action Forward --shoulder-angle-deg 5 --elbow-angle-deg 30 --robot dymotor --execute
+```
+
+Real execution refuses to arm unless every joint has calibrated zero/min/max. No command-step or velocity limit is required: the first enabled command holds measured startup positions, then the complete absolute targets are passed through `SafeArmController` position limits and sent as one three-joint batch. Ctrl+C, feedback faults, and timeouts all enter Servo Off and close.
+
 Phase 4 保留 Phase 3 的 CH2 肘部规则，并用 pip 安装的 `flex_model_0003.FlexPredictor` 生成肩部人体语义：
 
 ```text

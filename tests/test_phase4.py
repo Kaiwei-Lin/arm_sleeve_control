@@ -13,6 +13,7 @@ from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBas
 from sleeve_arm.robot import FakeRobotArm
 from sleeve_arm.sources import FakeSleeveSource
 from tools.calibrate_flex_model import LatestFlexReader
+from tools.debug_model_mapping import manual_intent
 
 
 def model_config(**changes) -> FlexModelConfig:
@@ -155,6 +156,13 @@ def test_mapper_uses_absolute_shoulder_angles_not_startup_offsets() -> None:
     ))
     assert targets["shoulder_flexion"] == pytest.approx(0.4)
     assert targets["shoulder_abduction"] == pytest.approx(0.2)
+
+
+def test_manual_backward_model_output_uses_absolute_joint_semantics() -> None:
+    intent = manual_intent(ArmAction.BACKWARD, shoulder_angle_deg=30.0, elbow_angle_deg=90.0)
+    assert intent.shoulder_flexion_rad == pytest.approx(math.radians(-30.0))
+    assert intent.shoulder_abduction_rad == 0.0
+    assert intent.elbow_flexion == pytest.approx(math.radians(90.0))
 
 
 def test_low_confidence_is_recorded_but_not_filtered() -> None:

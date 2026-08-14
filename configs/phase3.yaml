@@ -16,7 +16,7 @@ phase3:
     # Absolute human elbow angles corresponding to input_min/input_max.
     # Fill from the two calibration postures; these are not robot limits.
     angle_range:
-      min_deg: -3
+      min_deg: -5
       max_deg: 180
 
     invert_output: false
