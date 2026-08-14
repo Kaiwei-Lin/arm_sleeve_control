@@ -147,6 +147,35 @@ def test_parser_counts_tid_gaps_with_60000_to_1_wrap() -> None:
     assert parser.tid_drop_count == 3
 
 
+def test_parser_rejects_zero_norm_quaternion_as_invalid() -> None:
+    parser = demo.Imu770FrameParser()
+    raw = make_imu770_frame(15, _vector_tlv(0x41, 0, 0, 0, 0))
+
+    assert parser.feed(raw) == []
+    assert parser.frame_count == 1
+    assert parser.valid_frame_count == 0
+    assert parser.invalid_quaternion_count == 1
+
+
+def test_parser_does_not_report_duplicate_tid_as_full_cycle_drop() -> None:
+    parser = demo.Imu770FrameParser()
+    quaternion = _vector_tlv(0x41, 1_000_000, 0, 0, 0)
+
+    parser.feed(make_imu770_frame(20, quaternion) + make_imu770_frame(20, quaternion))
+
+    assert parser.tid_drop_count == 0
+
+
+def test_parser_treats_large_backward_tid_jump_as_device_restart() -> None:
+    parser = demo.Imu770FrameParser()
+    quaternion = _vector_tlv(0x41, 1_000_000, 0, 0, 0)
+
+    parser.feed(make_imu770_frame(500, quaternion) + make_imu770_frame(1, quaternion))
+
+    assert parser.tid_drop_count == 0
+    assert parser.tid_reset_count == 1
+
+
 @pytest.mark.parametrize(
     "quaternion",
     [(0.0, 0.0, 0.0, 0.0), (float("nan"), 0.0, 0.0, 0.0)],
@@ -262,6 +291,17 @@ def test_synchronizer_bounds_each_input_queue() -> None:
     upper, _, _ = synchronizer.pop_pair()  # type: ignore[misc]
 
     assert upper.host_timestamp_ns == 2_000_000
+    assert synchronizer.rejected_samples == 1
+
+
+def test_synchronizer_clear_discards_precalibration_backlog() -> None:
+    synchronizer = demo.SampleSynchronizer(max_gap_ns=20_000_000)
+    synchronizer.add_upper(sample_at(1_000_000, 1))
+    synchronizer.add_forearm(sample_at(1_000_000, 2))
+
+    assert synchronizer.clear() == 2
+    assert synchronizer.pop_pair() is None
+    assert synchronizer.rejected_samples == 0
 
 
 class FakeSerial:
@@ -333,6 +373,23 @@ def test_serial_reader_surfaces_read_failure_and_closes_promptly() -> None:
     assert isinstance(reader.error, OSError)
     assert "disconnected" in str(reader.error)
     assert serial_port.closed.is_set()
+
+
+def test_serial_reader_reports_rejected_quaternion_frames() -> None:
+    raw = make_imu770_frame(22, _vector_tlv(0x41, 0, 0, 0, 0))
+    serial_port = FakeSerial([raw])
+    samples: list[demo.Imu770Sample] = []
+    reader = demo.Imu770SerialReader(
+        "COM7", 460800, 0.05, samples.append, serial_factory=lambda **kwargs: serial_port
+    )
+
+    reader.start()
+    wait_until(lambda: reader.stats.frames == 1)
+    reader.close()
+
+    assert samples == []
+    assert reader.stats.valid_frames == 0
+    assert reader.stats.invalid_quaternions == 1
 
 
 def test_cli_uses_hardware_defaults_and_has_no_simulation_mode() -> None:
@@ -424,7 +481,7 @@ def test_run_calibrates_records_live_pairs_and_closes_both_ports(tmp_path: objec
             "--startup-timeout",
             "1",
             "--calibration-seconds",
-            "0.02",
+            "0.10",
             "--print-hz",
             "100",
             "--csv",
@@ -441,4 +498,86 @@ def test_run_calibrates_records_live_pairs_and_closes_both_ports(tmp_path: objec
     assert rows
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert "Calibration complete" in captured.out
+    assert "sync_rejected=" in captured.out
+    assert "checksum=" in captured.out
+    assert "malformed=" in captured.out
+    assert "invalid_quaternion=" in captured.out
     assert "test stream ended" in captured.err
+
+
+class PhasedQuaternionSerial(FakeSerial):
+    def __init__(self, sensor: str, calibration_started: threading.Event, phase_time: list[float]) -> None:
+        super().__init__()
+        self.sensor = sensor
+        self.calibration_started = calibration_started
+        self.phase_time = phase_time
+        self.tid = 0
+
+    @property
+    def in_waiting(self) -> int:
+        return 64
+
+    def read(self, size: int) -> bytes:
+        time.sleep(0.0005)
+        if not self.calibration_started.is_set():
+            angle = 90.0 if self.sensor == "upper" else 0.0
+        else:
+            elapsed = time.monotonic() - self.phase_time[0]
+            if elapsed < 0.20:
+                angle = 0.0
+            elif elapsed < 0.40:
+                angle = 30.0 if self.sensor == "upper" else 0.0
+            else:
+                raise OSError("phased test complete")
+        self.tid = self.tid % 60_000 + 1
+        quaternion = axis_angle((1.0, 0.0, 0.0), angle)
+        raw_quaternion = tuple(round(value * 1_000_000) for value in quaternion)
+        return make_imu770_frame(self.tid, _vector_tlv(0x41, *raw_quaternion))
+
+
+def test_run_discards_samples_captured_before_calibration_prompt_returns(
+    tmp_path: object, capsys: object
+) -> None:
+    path = tmp_path / "post_prompt.csv"  # type: ignore[operator]
+    calibration_started = threading.Event()
+    phase_time = [0.0]
+    serial_ports = {
+        "COM5": PhasedQuaternionSerial("upper", calibration_started, phase_time),
+        "COM6": PhasedQuaternionSerial("forearm", calibration_started, phase_time),
+    }
+
+    def factory(**kwargs: object) -> PhasedQuaternionSerial:
+        return serial_ports[str(kwargs["port"])]
+
+    def confirm_zero_pose(prompt: str) -> str:
+        time.sleep(0.10)
+        phase_time[0] = time.monotonic()
+        calibration_started.set()
+        return ""
+
+    args = demo.build_argument_parser().parse_args(
+        [
+            "--upper-port",
+            "COM5",
+            "--forearm-port",
+            "COM6",
+            "--startup-timeout",
+            "1",
+            "--calibration-seconds",
+            "0.10",
+            "--print-hz",
+            "100",
+            "--ema-alpha",
+            "1",
+            "--csv",
+            str(path),
+        ]
+    )
+
+    result = demo.run(args, serial_factory=factory, input_fn=confirm_zero_pose)
+
+    assert result == 1
+    with path.open(newline="", encoding="utf-8") as csv_file:
+        world_angles = [float(row["world_filtered_deg"]) for row in csv.DictReader(csv_file)]
+    assert any(angle == pytest.approx(30.0, abs=0.2) for angle in world_angles)
+    capsys.readouterr()  # type: ignore[attr-defined]

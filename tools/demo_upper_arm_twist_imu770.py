@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import atan2, degrees
 from pathlib import Path
 from typing import Any, Callable, Sequence, TextIO
@@ -41,7 +41,9 @@ class Imu770FrameParser:
         self.valid_frame_count = 0
         self.checksum_error_count = 0
         self.parser_error_count = 0
+        self.invalid_quaternion_count = 0
         self.tid_drop_count = 0
+        self.tid_reset_count = 0
 
     @staticmethod
     def checksum(data: bytes) -> tuple[int, int]:
@@ -90,13 +92,23 @@ class Imu770FrameParser:
                 continue
             if sample is None:
                 continue
+            try:
+                normalized = normalize_quaternion(sample.quaternion_wxyz or ())
+            except ValueError:
+                self.invalid_quaternion_count += 1
+                continue
+            sample = replace(sample, quaternion_wxyz=tuple(float(value) for value in normalized))
             self._count_tid_gap(tid)
             self.valid_frame_count += 1
             samples.append(sample)
 
     def _count_tid_gap(self, tid: int) -> None:
         if self._last_tid is not None:
-            self.tid_drop_count += (tid - self._last_tid - 1) % 60_000
+            advance = (tid - self._last_tid) % 60_000
+            if 0 < advance <= 30_000:
+                self.tid_drop_count += advance - 1
+            elif advance > 30_000:
+                self.tid_reset_count += 1
         self._last_tid = tid
 
     def _parse_message(self, tid: int, message: bytes, host_timestamp_ns: int) -> Imu770Sample | None:
@@ -294,11 +306,23 @@ class SampleSynchronizer:
 
     def add_upper(self, sample: Imu770Sample) -> None:
         with self._lock:
-            self._upper.append(sample)
+            self._append(self._upper, sample)
 
     def add_forearm(self, sample: Imu770Sample) -> None:
         with self._lock:
-            self._forearm.append(sample)
+            self._append(self._forearm, sample)
+
+    def _append(self, queue: deque[Imu770Sample], sample: Imu770Sample) -> None:
+        if len(queue) == queue.maxlen:
+            self.rejected_samples += 1
+        queue.append(sample)
+
+    def clear(self) -> int:
+        with self._lock:
+            discarded = len(self._upper) + len(self._forearm)
+            self._upper.clear()
+            self._forearm.clear()
+            return discarded
 
     def pop_pair(self) -> tuple[Imu770Sample, Imu770Sample, int] | None:
         with self._lock:
@@ -334,7 +358,9 @@ class ReaderStats:
     valid_frames: int
     checksum_errors: int
     parser_errors: int
+    invalid_quaternions: int
     tid_drops: int
+    tid_resets: int
     fps: float
 
 
@@ -412,7 +438,9 @@ class Imu770SerialReader:
             valid_frames=valid,
             checksum_errors=self._parser.checksum_error_count,
             parser_errors=self._parser.parser_error_count,
+            invalid_quaternions=self._parser.invalid_quaternion_count,
             tid_drops=self._parser.tid_drop_count,
+            tid_resets=self._parser.tid_reset_count,
             fps=fps,
         )
 
@@ -634,6 +662,7 @@ def run(
             time.sleep(0.005)
 
         input_fn("Hold the aligned zero pose still, then press Enter to calibrate...")
+        pre_calibration_discarded = synchronizer.clear()
         print(f"Calibrating for {args.calibration_seconds:.2f} s; keep both IMUs still...")
         calibration_pairs: list[tuple[np.ndarray, np.ndarray]] = []
         calibration_deadline = time.monotonic() + args.calibration_seconds
@@ -658,7 +687,10 @@ def run(
             )
         world_estimator.calibrate([upper for upper, _ in calibration_pairs])
         relative_estimator.calibrate(calibration_pairs)
-        print(f"Calibration complete: {len(calibration_pairs)} synchronized pairs. Ctrl+C to stop.")
+        print(
+            f"Calibration complete: {len(calibration_pairs)} synchronized pairs "
+            f"(discarded {pre_calibration_discarded} pre-prompt samples). Ctrl+C to stop."
+        )
 
         print_interval = 1.0 / args.print_hz
         last_print = float("-inf")
@@ -688,8 +720,11 @@ def run(
                         f"difference={world.filtered_deg - relative.filtered_deg:+8.2f} deg  "
                         f"sync={gap_ns / 1e6:5.2f} ms  "
                         f"fps=({upper_stats.fps:5.1f},{forearm_stats.fps:5.1f})  "
-                        f"errors=({upper_stats.checksum_errors + upper_stats.parser_errors},"
-                        f"{forearm_stats.checksum_errors + forearm_stats.parser_errors})"
+                        f"sync_rejected={synchronizer.rejected_samples}  "
+                        f"checksum=({upper_stats.checksum_errors},{forearm_stats.checksum_errors})  "
+                        f"malformed=({upper_stats.parser_errors},{forearm_stats.parser_errors})  "
+                        f"invalid_quaternion=({upper_stats.invalid_quaternions},"
+                        f"{forearm_stats.invalid_quaternions})"
                     )
                     last_print = now
     except KeyboardInterrupt:
@@ -705,7 +740,9 @@ def run(
         print(
             f"Summary: upper_valid={upper_stats.valid_frames}, forearm_valid={forearm_stats.valid_frames}, "
             f"sync_rejected={synchronizer.rejected_samples}, "
-            f"tid_drops=({upper_stats.tid_drops},{forearm_stats.tid_drops})"
+            f"tid_drops=({upper_stats.tid_drops},{forearm_stats.tid_drops}), "
+            f"tid_resets=({upper_stats.tid_resets},{forearm_stats.tid_resets}), "
+            f"invalid_quaternion=({upper_stats.invalid_quaternions},{forearm_stats.invalid_quaternions})"
         )
 
 
