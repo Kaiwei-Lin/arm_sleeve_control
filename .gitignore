@@ -7,3 +7,4 @@ calibrations/*.json
 .worktrees/
 flexarm_estimator/
 .idea/
+LINUX/

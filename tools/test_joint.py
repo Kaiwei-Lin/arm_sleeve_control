@@ -42,7 +42,8 @@ def main() -> int:
         controller.connect()
         state = controller.read_joint_state(args.joint)
         joint = config.joints[args.joint]
-        requested = state.position + math.radians(args.delta_deg)
+        # requested = state.position + math.radians(args.delta_deg)
+        requested = math.radians(args.delta_deg)
         target = controller.preview_positions({args.joint: requested}, dt=args.command_dt)[args.joint]
 
         print(f"Joint: {args.joint}")
