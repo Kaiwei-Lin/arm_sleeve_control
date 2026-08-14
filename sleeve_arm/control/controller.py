@@ -44,7 +44,7 @@ class SafeArmController:
 
     def enable(self) -> None:
         if not self.connected or not self.ready:
-            raise SafetyError("stable feedback and motor discovery are required before Servo On")
+            raise SafetyError("stable feedback from all configured motors is required before Servo On")
         if self.enabled:
             return
         try:

@@ -149,72 +149,6 @@ static int validate_open_config(const ArmOpenConfig *config)
     return 0;
 }
 
-static int discover_required_motors(const ArmOpenConfig *config)
-{
-    RobotMotorListHandle list = NULL;
-    MotorArray array;
-    int matches[ARM_JOINT_COUNT] = {0};
-    int i;
-    int joint;
-    int object_list_created = 0;
-    int result = 0;
-
-    memset(&array, 0, sizeof(array));
-    list = motorlist_create();
-    if (list == NULL) {
-        return fail(-3, "motorlist_create failed");
-    }
-    if (!get_robot_motorlist(g_arm.ctx, list)) {
-        result = fail(-3, "get_robot_motorlist failed");
-        goto done;
-    }
-
-    robot_create_motorObjectList(g_arm.ctx, list, &array);
-    object_list_created = 1;
-    if (array.count < 0 || array.count > 16) {
-        result = fail(-3, "SDK returned invalid motor count: %d", array.count);
-        if (array.count < 0) {
-            array.count = 0;
-        } else {
-            array.count = 16;
-        }
-        goto done;
-    }
-    for (i = 0; i < array.count; ++i) {
-        unsigned short motor_id = 0;
-        unsigned short can_id = 0;
-        if (array.robotmotors[i] == NULL) {
-            result = fail(-3, "SDK returned a null motor in the discovery list");
-            goto done;
-        }
-        robot_motor_get_motor_id(array.robotmotors[i], &motor_id, &can_id);
-        for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-            if (motor_id == config->motor_ids[joint] && can_id == config->can_ids[joint]) {
-                ++matches[joint];
-            }
-        }
-    }
-    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-        if (matches[joint] != 1) {
-            result = fail(
-                -3,
-                "required motor id=%u CAN=%u was discovered %d time(s)",
-                (unsigned)config->motor_ids[joint],
-                (unsigned)config->can_ids[joint],
-                matches[joint]
-            );
-            goto done;
-        }
-    }
-
-done:
-    if (object_list_created) {
-        motorObjectlist_destroy(g_arm.ctx, &array);
-    }
-    motorlist_destroy(list);
-    return result;
-}
-
 int arm_open(const ArmOpenConfig *config)
 {
     int joint;
@@ -250,12 +184,6 @@ int arm_open(const ArmOpenConfig *config)
         fail(-2, "robot_set_fast_mode failed");
         release_session(0);
         return -2;
-    }
-
-    result = discover_required_motors(config);
-    if (result != 0) {
-        release_session(0);
-        return result;
     }
 
     for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
