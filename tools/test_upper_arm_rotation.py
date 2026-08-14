@@ -10,7 +10,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sleeve_arm.config import DEFAULT_SENSOR_CONFIG_PATH, load_sensor_config
-from sleeve_arm.domain import SleeveFrame
 from sleeve_arm.estimation import UpperArmRotationEstimator
 from sleeve_arm.sources import FakeImuSource, ImuSource, create_imu_source
 from sleeve_arm.sync import SensorSynchronizer
@@ -60,19 +59,16 @@ def main() -> int:
 
         def next_pair():
             nonlocal last_pair
-            latest = {}
             for name, source in sources.items():
                 frame = source.latest()
                 if frame is None:
                     return None
-                latest[name] = frame
                 (sync.add_imu1 if name == "imu1" else sync.add_imu2)(frame)
-            upper_latest = latest[config.upper_imu]
-            sample = sync.synchronize(SleeveFrame(upper_latest.timestamp, (0.0,)))
-            upper = getattr(sample, config.upper_imu)
-            reference = getattr(sample, config.reference_imu)
-            if upper is None or reference is None:
+            pair = sync.latest_imu_pair(config.max_sync_ms)
+            if pair is None:
                 return None
+            frames = {"imu1": pair[0], "imu2": pair[1]}
+            upper, reference = frames[config.upper_imu], frames[config.reference_imu]
             identity = (upper.timestamp, reference.timestamp)
             if identity == last_pair:
                 return None
@@ -90,7 +86,7 @@ def main() -> int:
                 break
             time.sleep(0.001)
         else:
-            raise RuntimeError("no synchronized valid dual-IMU quaternion pair before startup timeout")
+            raise RuntimeError("no fresh valid dual-IMU quaternion pair before startup timeout")
 
         input("请保持大臂旋转零位并静止，按回车开始 IMU 零位标定：")
         print(f"正在标定 {config.calibration_seconds:g} 秒；不要求手臂水平...")

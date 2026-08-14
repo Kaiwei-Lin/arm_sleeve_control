@@ -18,7 +18,7 @@ sensors:
     timeout_s: 0.1
 
   imu2:
-    enabled: false
+    enabled: true
     backend: imu770_serial
     port: COM14
     baudrate: 460800
@@ -27,13 +27,14 @@ sensors:
 # Optional dual-IMU upper-arm rotation. Enable only after both IMU endpoints
 # and the calibrated ID24 robot limits are ready.
 upper_arm_rotation:
-  enabled: false
+  enabled: true
   upper_imu: imu1
   reference_imu: imu2
   # Parser order is [w,x,y,z]; interpreted as Sensor->World per the reference demo.
   twist_axis: x
   ema_alpha: 0.35
-  max_sync_ms: 20
+  # null: use the latest frame from each IMU without timestamp alignment.
+  max_sync_ms: null
   calibration_seconds: 2.0
   startup_timeout_s: 10.0
 
