@@ -1,7 +1,7 @@
 phase3:
   elbow:
     # Human-facing channel numbers are 1-based: CH2 == SleeveFrame.channels[1].
-    sleeve_channel: 1
+    sleeve_channel: 2
 
     # Must be filled from tools/calibrate_sleeve_elbow.py before real Sleeve use.
     input_min: 1

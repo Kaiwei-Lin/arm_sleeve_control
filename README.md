@@ -266,7 +266,81 @@ python tools/run_sleeve_elbow.py --sleeve real --robot dymotor --execute
 
 以上是 Phase 3 的边界；Phase 3 本身不包含 CH3/CH4 肩部控制、训练模型、IMU 融合或三自由度袖套控制。Phase 4 在下面通过同一 `MotionPredictor.predict(SensorSample) -> MotionIntent` contract 接入外部模型，不修改 SafetyController 或 Robot 层。
 
-## Phase 4 — FlexPredictor Model Integration
+## Phase 4 — FlexArmEstimator Model Integration（当前）
+
+当前肩部模型已经迁移到 `flexarm-estimator 0.1.0`。本仓库不复制模型包源码、
+wheel 或训练权重；控制代码只调用已安装包的公开入口，并从外置目录加载模型产物。
+
+安装 wheel（远程控制环境已安装时无需重复执行）：
+
+```powershell
+python -m pip install "E:\PythonProject\electronic_skin_project\袖套控制\arm_data_collector\flexarm_estimator\dist\flexarm_estimator-0.1.0-py3-none-any.whl"
+```
+
+`configs/phase4.yaml` 中的 `model_dir` 必须指向包含 `metadata.json`、分类器和三个
+角度回归器的 `models` 子目录。当前配置为：
+
+```yaml
+predictor:
+  backend: flexarm_estimator
+  model_dir: E:/PythonProject/electronic_skin_project/袖套控制/arm_data_collector/flexarm_estimator/models
+  sleeve_channels: [3, 4, 5]
+  calibration_file: ../calibrations/flexarm_live_calibration.json
+  calibration_seconds: 3.0
+```
+
+若远程系统目录不同，只修改 `model_dir`；不需要把 `flexarm_estimator/src` 加入本项目。
+
+当前数据流：
+
+```text
+CH2 -> RuleBasedPredictor ---------------------------> elbow_flexion
+CH3/CH4/CH5 -> FlexArmEstimator.update(timestamp_ns) -> shoulder action/angle
+                         -> ArmMotionPredictor -> ArmMapper
+                         -> SafeArmController -> Robot
+```
+
+每次重新穿戴袖套后，默认执行约 3 秒自然下垂标定。单独标定且不连接机器人：
+
+```powershell
+python tools/calibrate_flex_model.py
+```
+
+模型单独测试默认也会现场标定：
+
+```powershell
+python tools/test_flex_model.py
+```
+
+仅在确认保存的标定与当前穿戴一致时显式复用：
+
+```powershell
+python tools/test_flex_model.py --reuse-calibration
+python tools/run_model_control.py --sleeve real --robot fake --reuse-calibration
+```
+
+模型产生 `Forward`、`Backward`、`Lateral` 时分别映射为肩前屈、负向肩前屈和
+肩外展绝对语义角。`Rest` 与 `Unknown` 是正常状态：肩部保持最近一次有效目标；
+尚无有效活动预测时保持机器人启动位置；CH2 肘部预测仍继续更新。日志同时输出
+`action_conf`、`angle_conf`、`moving`、模型角度与推理时间。
+
+严格按以下顺序进行硬件验证；只有最后一步可能产生真实运动：
+
+```powershell
+# 1. 真实 Sleeve + FakeRobot（默认现场标定）
+python tools/run_model_control.py --sleeve real --robot fake
+
+# 2. 真实 Sleeve + DyMotor 只读 dry-run；不 Servo On、不发位置命令
+python tools/run_model_control.py --sleeve real --robot dymotor
+
+# 3. 现场急停、监护、零位和限位均确认后才执行
+python tools/run_model_control.py --sleeve real --robot dymotor --execute
+```
+
+模型包导入、权重加载、标定、传感器有效性和模型预热均在机器人连接/使能前完成。
+真实运动仍必须经过 `SafeArmController`，且必须显式提供 `--execute`。
+
+## Phase 4 — Legacy FlexPredictor Notes（已废弃，请勿执行）
 
 ### Offline mapper diagnostic
 

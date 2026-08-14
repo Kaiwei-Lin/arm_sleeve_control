@@ -17,6 +17,7 @@ from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibr
 from sleeve_arm.robot import FakeRobotArm
 from tools.debug_model_mapping import manual_intent
 from tools.run_model_control import prepare_flexarm_predictor
+from tools.test_flex_model import replay
 
 
 def model_config(**changes) -> FlexModelConfig:
@@ -338,6 +339,27 @@ def test_action_mapping_and_exact_model_inputs(
     assert intent.confidence == pytest.approx(0.8)
     assert intent.angle_confidence == pytest.approx(0.7)
     assert intent.moving is True
+
+
+def test_offline_replay_preserves_ch3_ch4_ch5_positions(tmp_path: Path) -> None:
+    recording = tmp_path / "samples.csv"
+    recording.write_text(
+        "timestamp,sleeve_ch_3,sleeve_ch_4,sleeve_ch_5\n"
+        "1.25,30,40,50\n",
+        encoding="utf-8",
+    )
+    estimator = FakeEstimator([
+        EstimatorResult("Unknown", 0.0, 0.0, 0.0, False)
+    ])
+    predictor = FlexModelPredictor(model_config(), estimator=estimator)
+
+    assert replay(recording, predictor) == 0
+    assert estimator.calls == [{
+        "flex1": 30.0,
+        "flex2": 40.0,
+        "flex3": 50.0,
+        "timestamp_ns": 1_250_000_000,
+    }]
 
 
 def test_mapper_uses_absolute_shoulder_angles_not_startup_offsets() -> None:

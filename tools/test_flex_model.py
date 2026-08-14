@@ -34,11 +34,13 @@ def replay(path: Path, predictor: FlexModelPredictor) -> int:
             raise ValueError(f"recording must contain: {', '.join(sorted(required))}")
         count = 0
         for row in rows:
-            channel_fields = sorted(
-                (name for name in rows.fieldnames if name.startswith("sleeve_ch_")),
-                key=lambda name: int(name.rsplit("_", 1)[1]),
+            channels = (
+                0.0,
+                0.0,
+                float(row["sleeve_ch_3"]),
+                float(row["sleeve_ch_4"]),
+                float(row["sleeve_ch_5"]),
             )
-            channels = tuple(float(row[name]) for name in channel_fields)
             sample = SensorSample(float(row["timestamp"]), SleeveFrame(float(row["timestamp"]), channels))
             print_prediction(predictor, predictor.predict(sample))
             count += 1
