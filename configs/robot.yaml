@@ -58,3 +58,18 @@ joints:
     # Commissioning command-step cap (1 degree), not a validated motor limit.
     max_position_step: null
 
+  upper_arm_rotation:
+    motor_id: 24
+    can_id: 2
+    # Provisional sign required by the current config schema; verify with a
+    # low-angle hardware test before treating the semantic direction as known.
+    direction: 1
+    direction_status: NEEDS_HARDWARE_VALIDATION
+    zero_position: null
+    min_position: null
+    max_position: null
+    max_velocity: null
+    max_current: null
+    max_tracking_error: null
+    max_position_step: null
+

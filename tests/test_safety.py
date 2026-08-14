@@ -25,6 +25,7 @@ def test_joint_mapping_is_loaded_from_config(config: RobotConfig) -> None:
         "shoulder_flexion": (22, 2),
         "shoulder_abduction": (23, 2),
         "elbow_flexion": (25, 2),
+        "upper_arm_rotation": (24, 2),
     }
     assert all(joint.direction_status == "NEEDS_HARDWARE_VALIDATION" for joint in config.joints.values())
 

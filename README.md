@@ -1,6 +1,6 @@
 # sleeve_arm_control
 
-面向真实三自由度机械臂的安全控制层，以及与机械臂完全隔离的传感器采集基础。
+面向真实机械臂的安全控制层，以及与机械臂完全隔离的传感器采集基础。
 
 ```text
 Python tools -> SafetyController -> DyMotorArm (ctypes)
@@ -9,7 +9,7 @@ Python tools -> SafetyController -> DyMotorArm (ctypes)
 
 ## 项目当前阶段
 
-Phase 1 支持三个机械臂关节的位置控制与 PVCT 读取。Phase 2 新增袖套、Optional 双 IMU、时间同步和数据记录。Phase 3 新增临时规则式 CH2 → 肘关节小范围验证链路；尚未接入训练模型、肩部袖套控制、IMU 融合、GUI 或网络远控。
+Phase 1 原有三个机械臂关节的位置控制与 PVCT 读取现已扩展加入大臂旋转电机。Phase 2 新增袖套、Optional 双 IMU、时间同步和数据记录。Phase 3 新增临时规则式 CH2 → 肘关节小范围验证链路；大臂旋转目前仅支持独立小角度调试，尚未接入 IMU 或模型控制。
 
 默认行为不会产生运动：`test_joint.py` 和 `test_three_joints.py` 只有显式加入 `--execute` 才会 Servo On 和发送目标。
 
@@ -82,17 +82,18 @@ python tools/record_sensors.py --fake --duration 2
 
 > CH2 与肘部、CH3/CH4 与肩部的关系仅是未来 Predictor 集成信息，当前没有实现任何机械臂 mapping。IMU 将来用于辅助模型判断人体手臂的运动方向和状态，而不是直接控制电机。
 
-## 三个关节
+## 机械臂关节
 
 | Semantic joint | Motor ID | CAN |
 | --- | ---: | ---: |
 | `shoulder_flexion` | 22 | 2 |
 | `shoulder_abduction` | 23 | 2 |
 | `elbow_flexion` | 25 | 2 |
+| `upper_arm_rotation` | 24 | 2 |
 
 业务层只使用以上语义名称。motor/CAN 映射、方向、零位和安全参数统一位于 `configs/robot.yaml`。
 
-> **硬件确认状态：** 三个 `direction` 只是待验证的调试假设，均标记为 `NEEDS_HARDWARE_VALIDATION`。真实零位、机械限位、最大速度、最大电流和最大跟踪误差目前都是 `null`；禁止把它们视为已知事实。
+> **ID24 硬件确认状态：** `upper_arm_rotation.direction: 1` 只是配置格式要求的临时符号，仍标记为 `NEEDS_HARDWARE_VALIDATION`；其零位和机械限位均为 `null`。只允许从当前反馈位置做小角度、有人监护的方向验证。当前 SDK 路径不提供速度命令，本项目也没有添加速度限制；当前没有 IMU → ID24 控制。
 
 ## SDK 位置与已确认行为
 
@@ -102,7 +103,7 @@ python tools/record_sensors.py --fake --duration 2
 
 - `robot_create` + `robot_config_net` 创建并连接主板上下文。
 - 厂家位置示例在 motor object 建立后执行主板状态机 `0x80 → 1`，但实机已确认该调用不适合放在只读连接路径；bridge 的 `arm_open` 不执行状态机、Servo 或位置命令。
-- `get_robot_motorlist` + `robot_create_motorObjectList` 枚举电机；bridge 要求 22/CAN2、23/CAN2、25/CAN2 各精确出现一次。
+- `get_robot_motorlist` + `robot_create_motorObjectList` 枚举电机；bridge 要求 22/CAN2、23/CAN2、25/CAN2、24/CAN2 各精确出现一次。
 - `robot_motor_get_PVCTFast` 提供 position、velocity、estimated torque、state 和 error 等缓存反馈。
 - `robot_motor_set_control_mode(..., MOTOR_CTRL_MODE_POSITION)` 切换位置模式，`CTRL_SERVO_ON/OFF` 控制使能。
 - `robot_motor_set_position` 暂存每台电机目标，`robot_motor_set_big_pose` 一次发送已注册电机的大包；三关节控制复用此 batch 路径。
@@ -497,6 +498,25 @@ python tools/test_joint.py \
 3. `shoulder_flexion`
 
 每个关节先 dry-run，再用 **不超过 1°** 的单次 `--execute`。若方向与语义不一致，停止并只修改配置中的 `direction`；不要修改业务代码。验证后才把 `direction_status` 改为 `VALIDATED` 并记录验证过程。
+
+新增 ID24 大臂旋转电机也复用同一个安全单关节工具。先只读连接并预览目标：
+
+```bash
+python tools/test_joint.py \
+    --joint upper_arm_rotation \
+    --delta-deg 1
+```
+
+确认 Motor ID 24、CAN 2、当前反馈和目标方向均正确，机械结构周围无干涉且急停可用后，才允许显式执行：
+
+```bash
+python tools/test_joint.py \
+    --joint upper_arm_rotation \
+    --delta-deg 1 \
+    --execute
+```
+
+只有第二条命令会 Servo On 并发送位置目标。测试从当前反馈位置增加 1°，不会寻找零位或限位；若方向错误立即停止，修正 `configs/robot.yaml` 后再重新 dry-run。
 
 ## Step 4：三个关节联合小幅运动
 

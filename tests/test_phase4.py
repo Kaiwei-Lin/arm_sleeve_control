@@ -365,7 +365,12 @@ def test_offline_replay_preserves_ch3_ch4_ch5_positions(tmp_path: Path) -> None:
 
 
 def test_mapper_uses_absolute_shoulder_angles_not_startup_offsets() -> None:
-    startup = {"shoulder_flexion": 1.0, "shoulder_abduction": -0.5, "elbow_flexion": 0.25}
+    startup = {
+        "shoulder_flexion": 1.0,
+        "shoulder_abduction": -0.5,
+        "elbow_flexion": 0.25,
+        "upper_arm_rotation": 0.75,
+    }
     mapper = ArmMapper(load_phase3_config().elbow, startup)
     targets = mapper.map(MotionIntent(
         timestamp=1.0,
@@ -375,6 +380,7 @@ def test_mapper_uses_absolute_shoulder_angles_not_startup_offsets() -> None:
     ))
     assert targets["shoulder_flexion"] == pytest.approx(0.4)
     assert targets["shoulder_abduction"] == pytest.approx(0.2)
+    assert targets["upper_arm_rotation"] == pytest.approx(0.75)
 
 
 def test_manual_backward_model_output_uses_absolute_joint_semantics() -> None:

@@ -153,7 +153,7 @@ static int discover_required_motors(const ArmOpenConfig *config)
 {
     RobotMotorListHandle list = NULL;
     MotorArray array;
-    int matches[ARM_JOINT_COUNT] = {0, 0, 0};
+    int matches[ARM_JOINT_COUNT] = {0};
     int i;
     int joint;
     int object_list_created = 0;
@@ -497,7 +497,7 @@ int arm_set_joint_positions(const float positions[ARM_JOINT_COUNT], uint32_t mas
 
 int arm_set_joint_position(int joint, float position)
 {
-    float positions[ARM_JOINT_COUNT] = {0.0f, 0.0f, 0.0f};
+    float positions[ARM_JOINT_COUNT] = {0};
     if (!valid_joint(joint)) {
         return fail(-1, "invalid joint index: %d", joint);
     }
@@ -515,7 +515,11 @@ int arm_set_three_joint_positions(
         shoulder_abduction,
         elbow_flexion
     };
-    return arm_set_joint_positions(positions, ARM_ALL_JOINTS_MASK);
+    /* Compatibility API: never target the fourth joint implicitly. */
+    return arm_set_joint_positions(
+        positions,
+        (1u << ARM_JOINT_UPPER_ARM_ROTATION) - 1u
+    );
 }
 
 void arm_close(void)

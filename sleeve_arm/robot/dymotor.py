@@ -13,6 +13,7 @@ from sleeve_arm.robot.base import RobotArm, RobotError
 
 
 _JOINT_INDEX = {name: index for index, name in enumerate(JOINT_NAMES)}
+_JOINT_COUNT = len(JOINT_NAMES)
 
 
 def semantic_to_sdk_position(joint: JointConfig, semantic_position: float) -> float:
@@ -29,8 +30,8 @@ class _ArmOpenConfig(ctypes.Structure):
         ("remote_ip", ctypes.c_char_p),
         ("remote_port", ctypes.c_int),
         ("fast_mode", ctypes.c_int),
-        ("motor_ids", ctypes.c_uint16 * 3),
-        ("can_ids", ctypes.c_uint16 * 3),
+        ("motor_ids", ctypes.c_uint16 * _JOINT_COUNT),
+        ("can_ids", ctypes.c_uint16 * _JOINT_COUNT),
     ]
 
 
@@ -109,10 +110,10 @@ class DyMotorArm(RobotArm):
             remote_ip=network.remote_ip.encode("ascii"),
             remote_port=network.remote_port,
             fast_mode=network.fast_mode,
-            motor_ids=(ctypes.c_uint16 * 3)(
+            motor_ids=(ctypes.c_uint16 * _JOINT_COUNT)(
                 *(self.config.joints[name].motor_id for name in JOINT_NAMES)
             ),
-            can_ids=(ctypes.c_uint16 * 3)(
+            can_ids=(ctypes.c_uint16 * _JOINT_COUNT)(
                 *(self.config.joints[name].can_id for name in JOINT_NAMES)
             ),
         )
@@ -206,7 +207,7 @@ class DyMotorArm(RobotArm):
         if not targets:
             raise RobotError("at least one joint target is required")
 
-        positions = (ctypes.c_float * 3)(0.0, 0.0, 0.0)
+        positions = (ctypes.c_float * _JOINT_COUNT)()
         mask = 0
         for name, semantic_position in targets.items():
             index = self._joint_index(name)

@@ -36,8 +36,9 @@ def test_fake_robot_three_joint_flow(controller: SafeArmController) -> None:
     sent = controller.set_joint_positions(command.as_dict(), dt=0.1)
     states = controller.read_joint_states()
 
-    assert {name: state.position for name, state in states.items()} == pytest.approx(sent)
+    assert {name: states[name].position for name in sent} == pytest.approx(sent)
     assert sent == pytest.approx(command.as_dict())
+    assert states["upper_arm_rotation"].position == 0.0
     controller.shutdown()
 
 
