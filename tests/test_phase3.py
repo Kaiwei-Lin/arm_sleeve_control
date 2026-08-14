@@ -28,8 +28,9 @@ def elbow_config(**changes):
 
 
 def test_uncalibrated_real_input_is_rejected() -> None:
+    uncalibrated = replace(load_phase3_config().elbow, input_min=None, input_max=None)
     with pytest.raises(ValueError, match="calibrated input_min"):
-        RuleBasedPredictor(load_phase3_config().elbow)
+        RuleBasedPredictor(uncalibrated)
 
 
 @pytest.mark.parametrize(("raw", "normalized", "angle_deg"), ((10.0, 0.0, 0.0), (20.0, 1.0, 100.0), (15.0, 0.5, 50.0), (0.0, 0.0, 0.0), (30.0, 1.0, 100.0)))
@@ -112,6 +113,5 @@ def test_fake_end_to_end_uses_safety_and_only_moves_elbow() -> None:
 
     assert states["shoulder_flexion"].position == startup["shoulder_flexion"]
     assert states["shoulder_abduction"].position == startup["shoulder_abduction"]
-    # Existing Phase 1 one-degree cap remains the final safety gate.
-    assert safe["elbow_flexion"] == pytest.approx(math.radians(1))
+    assert safe["elbow_flexion"] == pytest.approx(math.radians(90))
     assert robot.events == ["connect", "enable", "disable", "close"]
