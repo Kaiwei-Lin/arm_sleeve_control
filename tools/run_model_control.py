@@ -16,13 +16,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sleeve_arm.config import (
     DEFAULT_CONFIG_PATH, DEFAULT_PHASE3_CONFIG_PATH, DEFAULT_PHASE4_CONFIG_PATH,
     DEFAULT_SENSOR_CONFIG_PATH, load_phase3_config, load_phase4_config,
-    load_robot_config, load_sensor_config, FlexModelConfig,
+    load_robot_config, load_sensor_config, FlexModelConfig, SensorConfig,
+    UpperArmRotationConfig,
 )
 from sleeve_arm.control import ArmMapper, SafeArmController, SensorWatchdog
+from sleeve_arm.domain import ImuFrame, SensorSample
+from sleeve_arm.estimation import UpperArmRotationEstimator, UpperArmRotationResult
 from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBasedPredictor
 from sleeve_arm.predictor.calibration import collect_calibration_samples
 from sleeve_arm.robot import DyMotorArm, FakeRobotArm
-from sleeve_arm.sources import FakeSleeveSource, create_sleeve_source
+from sleeve_arm.sources import (
+    FakeImuSource,
+    FakeSleeveSource,
+    ImuSource,
+    create_imu_source,
+    create_sleeve_source,
+)
 from sleeve_arm.sync import SensorSynchronizer
 
 
@@ -76,9 +85,110 @@ def prepare_flexarm_predictor(
     return prepared
 
 
+def _add_latest_imus(sync: SensorSynchronizer, sources: dict[str, ImuSource]) -> None:
+    for name, source in sources.items():
+        frame = source.latest()
+        if frame is None:
+            continue
+        (sync.add_imu1 if name == "imu1" else sync.add_imu2)(frame)
+
+
+def _rotation_pair(
+    sample: SensorSample,
+    config: UpperArmRotationConfig,
+) -> tuple[ImuFrame, ImuFrame]:
+    upper = getattr(sample, config.upper_imu)
+    reference = getattr(sample, config.reference_imu)
+    if upper is None or reference is None:
+        raise ValueError("upper-arm rotation requires synchronized upper and reference IMU frames")
+    return upper, reference
+
+
+def _synchronize_latest(
+    sleeve_source: Any,
+    imu_sources: dict[str, ImuSource],
+    sync: SensorSynchronizer,
+    last_sleeve_timestamp: float | None,
+) -> SensorSample | None:
+    _add_latest_imus(sync, imu_sources)
+    sleeve = sleeve_source.latest()
+    if sleeve is None or sleeve.timestamp == last_sleeve_timestamp:
+        return None
+    return sync.synchronize(sleeve)
+
+
+def prepare_upper_arm_rotation(
+    sleeve_source: Any,
+    imu_sources: dict[str, ImuSource],
+    sensor_config: SensorConfig,
+    sensor_timeout_s: float,
+    *,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> UpperArmRotationEstimator:
+    config = sensor_config.upper_arm_rotation
+    estimator = UpperArmRotationEstimator(
+        config.ema_alpha,
+        config.max_sync_ms,
+        config.twist_axis,
+    )
+
+    def synchronizer() -> SensorSynchronizer:
+        return SensorSynchronizer(
+            sensor_config.synchronization.max_time_delta_ms,
+            sensor_config.synchronization.buffer_duration_ms,
+            imu1_enabled=True,
+            imu2_enabled=True,
+        )
+
+    sync = synchronizer()
+    last_timestamp = None
+    startup_deadline = time.monotonic() + config.startup_timeout_s
+    while time.monotonic() < startup_deadline:
+        sample = _synchronize_latest(sleeve_source, imu_sources, sync, last_timestamp)
+        if sample is not None:
+            last_timestamp = sample.timestamp
+            if 0.0 <= time.monotonic() - sample.timestamp <= sensor_timeout_s:
+                try:
+                    estimator.validate_pair(*_rotation_pair(sample, config))
+                    break
+                except ValueError:
+                    pass
+        time.sleep(0.001)
+    else:
+        raise RuntimeError("no fresh synchronized valid dual-IMU quaternion pair before startup timeout")
+
+    input_fn("请保持大臂旋转零位并静止，按回车开始 IMU 零位标定：")
+    print_fn(f"正在标定 {config.calibration_seconds:g} 秒；当前姿态定义为 upper_arm_rotation=0°...")
+    sync = synchronizer()  # discard every pre-prompt frame
+    last_timestamp = None
+    pairs: list[tuple[ImuFrame, ImuFrame]] = []
+    deadline = time.monotonic() + config.calibration_seconds
+    while time.monotonic() < deadline:
+        sample = _synchronize_latest(sleeve_source, imu_sources, sync, last_timestamp)
+        if sample is not None:
+            last_timestamp = sample.timestamp
+            if 0.0 <= time.monotonic() - sample.timestamp <= sensor_timeout_s:
+                try:
+                    pair = _rotation_pair(sample, config)
+                    estimator.validate_pair(*pair)
+                except ValueError:
+                    pass
+                else:
+                    pairs.append(pair)
+        time.sleep(0.001)
+    estimator.calibrate(pairs)
+    zero = estimator.update(*pairs[-1])
+    print_fn(
+        f"IMU 零位标定完成：pairs={len(pairs)}, difference={zero.difference_deg:+.3f}°"
+    )
+    return estimator
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Flex model + CH2 elbow control; real motion requires --execute.")
     parser.add_argument("--sleeve", choices=("fake", "real"), default="real")
+    parser.add_argument("--imus", choices=("fake", "real"), default="real")
     parser.add_argument("--robot", choices=("fake", "dymotor"), default="dymotor")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--duration", type=float)
@@ -99,6 +209,7 @@ def main() -> int:
         action="store_true",
         help="print raw C-side PVCT values during DyMotor reads",
     )
+    parser.add_argument("--imu-debug", action="store_true", help="include both quaternions in 1 Hz telemetry")
     args = parser.parse_args()
     if args.duration is not None and args.duration <= 0:
         parser.error("--duration must be positive")
@@ -108,11 +219,18 @@ def main() -> int:
         parser.error("real robot execution requires --sleeve real")
 
     state = RuntimeState.INIT
-    source = controller = robot = shoulder_predictor = None
+    source = controller = robot = shoulder_predictor = rotation_estimator = None
+    imu_sources: dict[str, ImuSource] = {}
+    rotation_result: UpperArmRotationResult | None = None
+    last_rotation_frames: tuple[ImuFrame, ImuFrame] | None = None
+    last_rotation_rad: float | None = None
     invalid = consecutive_errors = stale = cycles = predictions = 0
+    rotation_invalid = rotation_consecutive_errors = 0
     try:
         phase3 = load_phase3_config(args.phase3_config)
         phase4 = load_phase4_config(args.phase4_config)
+        sensor_config = load_sensor_config(args.sensor_config)
+        rotation_config = sensor_config.upper_arm_rotation
         if phase4.predictor_backend != "flexarm_estimator":
             raise ValueError(
                 "run_model_control requires predictor.backend=flexarm_estimator; "
@@ -129,7 +247,10 @@ def main() -> int:
 
         robot_config = load_robot_config(args.robot_config)
         if args.robot == "dymotor" and args.execute:
-            for name in ("shoulder_flexion", "shoulder_abduction", "elbow_flexion"):
+            controlled = ["shoulder_flexion", "shoulder_abduction", "elbow_flexion"]
+            if rotation_config.enabled:
+                controlled.append("upper_arm_rotation")
+            for name in controlled:
                 joint = robot_config.joints[name]
                 if joint.zero_position is None or joint.min_position is None or joint.max_position is None:
                     raise ValueError(
@@ -149,13 +270,28 @@ def main() -> int:
         state = RuntimeState.ROBOT_READY
 
         # Match the proven Phase 1 tools: connect DyMotor before opening serial
-        # sources or importing/initializing the external model. Servo stays Off.
+        # sources or importing/initializing the external model. The vendor
+        # connection pipeline itself performs Servo On; --execute only gates
+        # post-startup generated targets.
         source = (
             FakeSleeveSource()
             if args.sleeve == "fake"
-            else create_sleeve_source(load_sensor_config(args.sensor_config))
+            else create_sleeve_source(sensor_config)
         )
+        if rotation_config.enabled:
+            for name in (rotation_config.upper_imu, rotation_config.reference_imu):
+                endpoint = getattr(sensor_config, name)
+                created = (
+                    FakeImuSource(timestamp_offset_s=(0.0 if name == rotation_config.upper_imu else 0.005))
+                    if args.imus == "fake"
+                    else create_imu_source(name, endpoint)
+                )
+                if created is None:
+                    raise RuntimeError(f"upper_arm_rotation could not create configured {name} source")
+                imu_sources[name] = created
         source.start()
+        for imu_source in imu_sources.values():
+            imu_source.start()
         shoulder_predictor = prepare_flexarm_predictor(
             source,
             phase4.flex_model,
@@ -165,15 +301,35 @@ def main() -> int:
         )
         predictor = ArmMotionPredictor(RuleBasedPredictor(elbow_config), shoulder_predictor)
 
-        sync = SensorSynchronizer()
+        if rotation_config.enabled:
+            rotation_estimator = prepare_upper_arm_rotation(
+                source,
+                imu_sources,
+                sensor_config,
+                phase3.sensor_timeout_ms / 1000.0,
+            )
+            last_rotation_rad = 0.0
+
+        sync = SensorSynchronizer(
+            sensor_config.synchronization.max_time_delta_ms,
+            sensor_config.synchronization.buffer_duration_ms,
+            imu1_enabled=rotation_config.enabled,
+            imu2_enabled=rotation_config.enabled,
+        )
         readiness_deadline = time.monotonic() + phase3.hard_timeout_ms / 1000.0
         sample = intent = None
         while time.monotonic() < readiness_deadline:
+            _add_latest_imus(sync, imu_sources)
             frame = source.latest()
             if frame is not None:
                 sample = sync.synchronize(frame)
                 try:
                     intent = predictor.predict(sample)
+                    if rotation_estimator is not None:
+                        last_rotation_frames = _rotation_pair(sample, rotation_config)
+                        rotation_result = rotation_estimator.update(*last_rotation_frames)
+                        last_rotation_rad = math.radians(rotation_result.difference_deg)
+                        intent = replace(intent, upper_arm_rotation_rad=last_rotation_rad)
                     break
                 except Exception as exc:
                     invalid += 1
@@ -201,6 +357,11 @@ def main() -> int:
         last_safe = startup
         state = RuntimeState.RUNNING
         while deadline is None or time.monotonic() < deadline:
+            rotation_source_error: Exception | None = None
+            try:
+                _add_latest_imus(sync, imu_sources)
+            except Exception as exc:
+                rotation_source_error = exc
             frame = source.latest()
             now = time.monotonic()
             cycles += 1
@@ -227,6 +388,28 @@ def main() -> int:
                     else:
                         if watchdog.is_hard_timeout(sample.timestamp, time.monotonic()):
                             raise RuntimeError("prediction completed after Sleeve hard timeout")
+                        if rotation_estimator is not None:
+                            try:
+                                if rotation_source_error is not None:
+                                    raise rotation_source_error
+                                last_rotation_frames = _rotation_pair(sample, rotation_config)
+                                rotation_result = rotation_estimator.update(*last_rotation_frames)
+                                last_rotation_rad = math.radians(rotation_result.difference_deg)
+                            except Exception as exc:
+                                rotation_invalid += 1
+                                rotation_consecutive_errors += 1
+                                print(
+                                    f"WARNING: upper-arm rotation rejected; holding last safe target: {exc}",
+                                    file=sys.stderr,
+                                )
+                                if rotation_consecutive_errors >= phase4.max_consecutive_prediction_errors:
+                                    raise RuntimeError(
+                                        f"too many consecutive upper-arm rotation errors: {exc}"
+                                    ) from exc
+                            else:
+                                rotation_consecutive_errors = 0
+                            assert last_rotation_rad is not None
+                            intent = replace(intent, upper_arm_rotation_rad=last_rotation_rad)
                         mapped = mapper.map(intent)
                         last_safe = (
                             controller.set_joint_positions(mapped, dt=period)
@@ -240,6 +423,25 @@ def main() -> int:
                     states = controller.read_joint_states()
                     positions = {name: value.position for name, value in states.items()}
                     tracking = {name: last_safe[name] - positions[name] for name in last_safe}
+                    rotation_telemetry = ""
+                    if rotation_estimator is not None and rotation_result is not None:
+                        rotation_telemetry = (
+                            f" rotation={rotation_result.difference_deg:+.2f}deg"
+                            f" world={rotation_result.world_filtered_deg:+.2f}deg"
+                            f" relative={rotation_result.relative_filtered_deg:+.2f}deg"
+                            f" imu_sync={rotation_result.sync_gap_ms:.2f}ms"
+                            f" rotation_rad={last_rotation_rad:+.4f}"
+                            f" rotation_target={last_safe['upper_arm_rotation']:+.4f}"
+                            f" rotation_position={positions['upper_arm_rotation']:+.4f}"
+                            f" imu_sync_rejected={rotation_estimator.sync_rejected_count}"
+                            f" rotation_invalid={rotation_invalid}"
+                        )
+                        if args.imu_debug and last_rotation_frames is not None:
+                            upper, reference = last_rotation_frames
+                            rotation_telemetry += (
+                                f" upper_q={(upper.quat_w, upper.quat_x, upper.quat_y, upper.quat_z)}"
+                                f" reference_q={(reference.quat_w, reference.quat_x, reference.quat_y, reference.quat_z)}"
+                            )
                     print(
                         f"state={state.name} sleeve_fps={source.stats.estimated_fps:.1f} "
                         f"control_fps={cycles / max(now-started, 1e-9):.1f} "
@@ -249,7 +451,7 @@ def main() -> int:
                         f"moving={intent.moving} angle_deg={intent.angle_deg:.2f} "
                         f"inference_ms={intent.inference_ms:.3f} "
                         f"targets_rad={last_safe} positions_rad={positions} tracking_rad={tracking} "
-                        f"invalid={invalid} stale={stale}"
+                        f"invalid={invalid} stale={stale}{rotation_telemetry}"
                     )
                     last_print = now
             next_tick += period
@@ -271,8 +473,19 @@ def main() -> int:
                 controller.shutdown()
             except Exception as exc:
                 print(f"ERROR [{state.name}] shutdown: {exc}", file=sys.stderr)
+        close_errors: list[Exception] = []
         if source is not None:
-            source.close()
+            try:
+                source.close()
+            except Exception as exc:
+                close_errors.append(exc)
+        for imu_source in reversed(tuple(imu_sources.values())):
+            try:
+                imu_source.close()
+            except Exception as exc:
+                close_errors.append(exc)
+        for exc in close_errors:
+            print(f"ERROR [{state.name}] source close: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

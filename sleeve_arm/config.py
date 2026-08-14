@@ -82,10 +82,23 @@ class RecordingConfig:
 
 
 @dataclass(frozen=True)
+class UpperArmRotationConfig:
+    enabled: bool
+    upper_imu: str
+    reference_imu: str
+    twist_axis: str
+    ema_alpha: float
+    max_sync_ms: float
+    calibration_seconds: float
+    startup_timeout_s: float
+
+
+@dataclass(frozen=True)
 class SensorConfig:
     sleeve: SensorEndpointConfig
     imu1: SensorEndpointConfig
     imu2: SensorEndpointConfig
+    upper_arm_rotation: UpperArmRotationConfig
     synchronization: SynchronizationConfig
     recording: RecordingConfig
 
@@ -241,8 +254,11 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
     sensors = raw.get("sensors")
     sync = raw.get("synchronization")
     recording = raw.get("recording")
+    rotation_raw = raw.get("upper_arm_rotation", {})
     if not isinstance(sensors, dict) or not isinstance(sync, dict) or not isinstance(recording, dict):
         raise ValueError("sensor config requires sensors, synchronization, and recording mappings")
+    if not isinstance(rotation_raw, dict):
+        raise ValueError("upper_arm_rotation must be a mapping")
 
     def endpoint(name: str) -> SensorEndpointConfig:
         item = sensors.get(name)
@@ -267,6 +283,41 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
             raise ValueError(f"sensors.{name}.baudrate must be positive or null")
         return result
 
+    sleeve = endpoint("sleeve")
+    imu1 = endpoint("imu1")
+    imu2 = endpoint("imu2")
+    rotation = UpperArmRotationConfig(
+        enabled=bool(rotation_raw.get("enabled", False)),
+        upper_imu=str(rotation_raw.get("upper_imu", "imu1")),
+        reference_imu=str(rotation_raw.get("reference_imu", "imu2")),
+        twist_axis=str(rotation_raw.get("twist_axis", "x")).lower(),
+        ema_alpha=float(rotation_raw.get("ema_alpha", 0.35)),
+        max_sync_ms=float(rotation_raw.get("max_sync_ms", 20.0)),
+        calibration_seconds=float(rotation_raw.get("calibration_seconds", 2.0)),
+        startup_timeout_s=float(rotation_raw.get("startup_timeout_s", 10.0)),
+    )
+    if rotation.upper_imu not in ("imu1", "imu2") or rotation.reference_imu not in ("imu1", "imu2"):
+        raise ValueError("upper_arm_rotation IMU roles must be imu1 or imu2")
+    if rotation.upper_imu == rotation.reference_imu:
+        raise ValueError("upper_imu and reference_imu must be different")
+    if rotation.twist_axis not in ("x", "y", "z"):
+        raise ValueError("upper_arm_rotation.twist_axis must be x, y, or z")
+    if not 0.0 < rotation.ema_alpha <= 1.0:
+        raise ValueError("upper_arm_rotation.ema_alpha must be in (0, 1]")
+    if not all(math.isfinite(value) and value > 0.0 for value in (
+        rotation.max_sync_ms,
+        rotation.calibration_seconds,
+        rotation.startup_timeout_s,
+    )):
+        raise ValueError("upper-arm rotation timing values must be positive and finite")
+    if rotation.enabled:
+        endpoints = {"imu1": imu1, "imu2": imu2}
+        for role in (rotation.upper_imu, rotation.reference_imu):
+            if not endpoints[role].enabled:
+                raise ValueError(
+                    "upper_arm_rotation requires both upper_imu and reference_imu to be enabled"
+                )
+
     synchronization = SynchronizationConfig(
         max_time_delta_ms=float(sync["max_time_delta_ms"]),
         buffer_duration_ms=float(sync["buffer_duration_ms"]),
@@ -282,7 +333,7 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
     recording_config = RecordingConfig(output_dir.resolve(), str(recording["format"]))
     if recording_config.format != "csv":
         raise ValueError("only csv recording is supported")
-    return SensorConfig(endpoint("sleeve"), endpoint("imu1"), endpoint("imu2"), synchronization, recording_config)
+    return SensorConfig(sleeve, imu1, imu2, rotation, synchronization, recording_config)
 
 
 def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3Config:

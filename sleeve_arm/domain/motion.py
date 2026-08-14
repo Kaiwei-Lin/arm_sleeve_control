@@ -17,6 +17,7 @@ class MotionIntent:
     elbow_flexion: float | None = None
     shoulder_flexion_rad: float | None = None
     shoulder_abduction_rad: float | None = None
+    upper_arm_rotation_rad: float | None = None
     action: ArmAction | None = None
     confidence: float | None = None
     action_probabilities: tuple[float, ...] | None = None
@@ -31,7 +32,13 @@ class MotionIntent:
             raise ValueError("MotionIntent timestamp must be finite")
         if self.elbow_flexion is not None and not math.isfinite(self.elbow_flexion):
             raise ValueError("elbow_flexion must be null or an absolute finite semantic angle in radians")
-        for name in ("shoulder_flexion_rad", "shoulder_abduction_rad", "angle_deg", "inference_ms"):
+        for name in (
+            "shoulder_flexion_rad",
+            "shoulder_abduction_rad",
+            "upper_arm_rotation_rad",
+            "angle_deg",
+            "inference_ms",
+        ):
             value = getattr(self, name)
             if value is not None and not math.isfinite(value):
                 raise ValueError(f"{name} must be null or finite")
