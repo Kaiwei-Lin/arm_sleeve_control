@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import struct
 import threading
 import time
@@ -332,3 +333,112 @@ def test_serial_reader_surfaces_read_failure_and_closes_promptly() -> None:
     assert isinstance(reader.error, OSError)
     assert "disconnected" in str(reader.error)
     assert serial_port.closed.is_set()
+
+
+def test_cli_uses_hardware_defaults_and_has_no_simulation_mode() -> None:
+    parser = demo.build_argument_parser()
+
+    args = parser.parse_args(["--upper-port", "COM5", "--forearm-port", "COM6"])
+
+    assert args.baudrate == 460800
+    assert args.timeout == pytest.approx(0.1)
+    assert args.max_sync_ms == pytest.approx(20.0)
+    assert args.ema_alpha == pytest.approx(0.35)
+    assert "--simulate" not in parser.format_help()
+
+
+def test_cli_rejects_same_port_for_both_sensors() -> None:
+    parser = demo.build_argument_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--upper-port", "COM5", "--forearm-port", "com5"])
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--baudrate", "0"),
+        ("--timeout", "0"),
+        ("--calibration-seconds", "-1"),
+        ("--print-hz", "0"),
+        ("--max-sync-ms", "0"),
+        ("--ema-alpha", "1.1"),
+    ],
+)
+def test_cli_rejects_invalid_numeric_options(option: str, value: str) -> None:
+    parser = demo.build_argument_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--upper-port", "COM5", "--forearm-port", "COM6", option, value])
+
+
+def test_csv_recorder_writes_raw_and_both_estimator_results(tmp_path: object) -> None:
+    path = tmp_path / "twist.csv"  # type: ignore[operator]
+    upper = sample_at(100_000_000, 11)
+    forearm = sample_at(104_000_000, 12)
+    world = demo.TwistResult(10.0, 370.0, 369.0)
+    relative = demo.TwistResult(-5.0, -5.0, -4.0)
+
+    with demo.CsvRecorder(path) as recorder:
+        recorder.write(upper, forearm, 4_000_000, world, relative)
+
+    with path.open(newline="", encoding="utf-8") as csv_file:
+        rows = list(csv.DictReader(csv_file))
+    assert rows[0]["upper_tid"] == "11"
+    assert rows[0]["upper_qw"] == "1.0"
+    assert rows[0]["world_filtered_deg"] == "369.0"
+    assert rows[0]["relative_filtered_deg"] == "-4.0"
+    assert rows[0]["sync_gap_ms"] == "4.0"
+
+
+class SlowDisconnectSerial(FakeSerial):
+    def read(self, size: int) -> bytes:
+        time.sleep(0.001)
+        if self.chunks:
+            return self.chunks.popleft()
+        raise OSError("test stream ended")
+
+
+def test_run_calibrates_records_live_pairs_and_closes_both_ports(tmp_path: object, capsys: object) -> None:
+    path = tmp_path / "live.csv"  # type: ignore[operator]
+    upper_frames = [
+        make_imu770_frame(tid, _vector_tlv(0x41, 1_000_000, 0, 0, 0)) for tid in range(1, 81)
+    ]
+    forearm_frames = [
+        make_imu770_frame(tid, _vector_tlv(0x41, 1_000_000, 0, 0, 0)) for tid in range(1, 81)
+    ]
+    serial_ports = {
+        "COM5": SlowDisconnectSerial(upper_frames),
+        "COM6": SlowDisconnectSerial(forearm_frames),
+    }
+
+    def factory(**kwargs: object) -> SlowDisconnectSerial:
+        return serial_ports[str(kwargs["port"])]
+
+    args = demo.build_argument_parser().parse_args(
+        [
+            "--upper-port",
+            "COM5",
+            "--forearm-port",
+            "COM6",
+            "--startup-timeout",
+            "1",
+            "--calibration-seconds",
+            "0.02",
+            "--print-hz",
+            "100",
+            "--csv",
+            str(path),
+        ]
+    )
+
+    result = demo.run(args, serial_factory=factory, input_fn=lambda prompt: "")
+
+    assert result == 1
+    assert all(port.closed.is_set() for port in serial_ports.values())
+    with path.open(newline="", encoding="utf-8") as csv_file:
+        rows = list(csv.DictReader(csv_file))
+    assert rows
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert "Calibration complete" in captured.out
+    assert "test stream ended" in captured.err

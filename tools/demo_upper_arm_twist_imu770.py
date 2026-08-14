@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
+import argparse
+import csv
 import struct
+import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from math import atan2, degrees
-from typing import Any, Callable, Sequence
+from pathlib import Path
+from typing import Any, Callable, Sequence, TextIO
 
 import numpy as np
 
@@ -438,3 +442,276 @@ class Imu770SerialReader:
             if not self._stop.is_set():
                 with self._lock:
                     self._error = exc
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if not np.isfinite(parsed) or parsed <= 0.0:
+        raise argparse.ArgumentTypeError("value must be a positive finite number")
+    return parsed
+
+
+def _ema_alpha(value: str) -> float:
+    parsed = float(value)
+    if not np.isfinite(parsed) or not 0.0 < parsed <= 1.0:
+        raise argparse.ArgumentTypeError("value must be in (0, 1]")
+    return parsed
+
+
+class _DemoArgumentParser(argparse.ArgumentParser):
+    def parse_args(self, args: Sequence[str] | None = None, namespace: argparse.Namespace | None = None) -> argparse.Namespace:
+        parsed = super().parse_args(args, namespace)
+        if parsed.upper_port.casefold() == parsed.forearm_port.casefold():
+            self.error("--upper-port and --forearm-port must be different")
+        return parsed
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = _DemoArgumentParser(
+        description="Read two IMU770 devices and compare upper-arm +X twist estimators."
+    )
+    parser.add_argument("--upper-port", required=True, help="Upper-arm IMU770 serial port, e.g. COM5")
+    parser.add_argument("--forearm-port", required=True, help="Forearm IMU770 serial port, e.g. COM6")
+    parser.add_argument("--baudrate", type=_positive_int, default=460800)
+    parser.add_argument("--timeout", type=_positive_float, default=0.1, help="Serial read timeout in seconds")
+    parser.add_argument("--startup-timeout", type=_positive_float, default=10.0, help="Seconds to wait for both streams")
+    parser.add_argument("--calibration-seconds", type=_positive_float, default=2.0)
+    parser.add_argument("--print-hz", type=_positive_float, default=10.0)
+    parser.add_argument("--max-sync-ms", type=_positive_float, default=20.0)
+    parser.add_argument("--ema-alpha", type=_ema_alpha, default=0.35)
+    parser.add_argument("--csv", type=Path, help="Optional parsed comparison CSV path")
+    return parser
+
+
+CSV_FIELDS = (
+    "upper_host_timestamp_ns",
+    "forearm_host_timestamp_ns",
+    "upper_tid",
+    "forearm_tid",
+    "upper_device_timestamp_us",
+    "forearm_device_timestamp_us",
+    "upper_qw",
+    "upper_qx",
+    "upper_qy",
+    "upper_qz",
+    "forearm_qw",
+    "forearm_qx",
+    "forearm_qy",
+    "forearm_qz",
+    "world_raw_deg",
+    "world_unwrapped_deg",
+    "world_filtered_deg",
+    "relative_raw_deg",
+    "relative_unwrapped_deg",
+    "relative_filtered_deg",
+    "difference_filtered_deg",
+    "sync_gap_ms",
+)
+
+
+class CsvRecorder:
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        self._file: TextIO | None = None
+        self._writer: csv.DictWriter[str] | None = None
+        self._last_flush = time.monotonic()
+
+    def __enter__(self) -> "CsvRecorder":
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = self.path.open("w", newline="", encoding="utf-8")
+            self._writer = csv.DictWriter(self._file, fieldnames=CSV_FIELDS)
+            self._writer.writeheader()
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+            self._writer = None
+
+    def write(
+        self,
+        upper: Imu770Sample,
+        forearm: Imu770Sample,
+        gap_ns: int,
+        world: TwistResult,
+        relative: TwistResult,
+    ) -> None:
+        if self._writer is None:
+            return
+        upper_q = upper.quaternion_wxyz or (None, None, None, None)
+        forearm_q = forearm.quaternion_wxyz or (None, None, None, None)
+        self._writer.writerow(
+            {
+                "upper_host_timestamp_ns": upper.host_timestamp_ns,
+                "forearm_host_timestamp_ns": forearm.host_timestamp_ns,
+                "upper_tid": upper.tid,
+                "forearm_tid": forearm.tid,
+                "upper_device_timestamp_us": upper.device_timestamp_us,
+                "forearm_device_timestamp_us": forearm.device_timestamp_us,
+                "upper_qw": upper_q[0],
+                "upper_qx": upper_q[1],
+                "upper_qy": upper_q[2],
+                "upper_qz": upper_q[3],
+                "forearm_qw": forearm_q[0],
+                "forearm_qx": forearm_q[1],
+                "forearm_qy": forearm_q[2],
+                "forearm_qz": forearm_q[3],
+                "world_raw_deg": world.raw_deg,
+                "world_unwrapped_deg": world.unwrapped_deg,
+                "world_filtered_deg": world.filtered_deg,
+                "relative_raw_deg": relative.raw_deg,
+                "relative_unwrapped_deg": relative.unwrapped_deg,
+                "relative_filtered_deg": relative.filtered_deg,
+                "difference_filtered_deg": world.filtered_deg - relative.filtered_deg,
+                "sync_gap_ms": gap_ns / 1e6,
+            }
+        )
+        now = time.monotonic()
+        if self._file is not None and now - self._last_flush >= 1.0:
+            self._file.flush()
+            self._last_flush = now
+
+
+def _raise_reader_error(upper_reader: Imu770SerialReader, forearm_reader: Imu770SerialReader) -> None:
+    if upper_reader.error is not None:
+        raise RuntimeError(f"upper IMU770 reader failed: {upper_reader.error}") from upper_reader.error
+    if forearm_reader.error is not None:
+        raise RuntimeError(f"forearm IMU770 reader failed: {forearm_reader.error}") from forearm_reader.error
+
+
+def run(
+    args: argparse.Namespace,
+    *,
+    serial_factory: Callable[..., object] | None = None,
+    input_fn: Callable[[str], str] = input,
+) -> int:
+    synchronizer = SampleSynchronizer(max_gap_ns=int(args.max_sync_ms * 1e6))
+    upper_reader = Imu770SerialReader(
+        args.upper_port,
+        args.baudrate,
+        args.timeout,
+        synchronizer.add_upper,
+        serial_factory=serial_factory,
+    )
+    forearm_reader = Imu770SerialReader(
+        args.forearm_port,
+        args.baudrate,
+        args.timeout,
+        synchronizer.add_forearm,
+        serial_factory=serial_factory,
+    )
+    world_estimator = TwistEstimator(args.ema_alpha)
+    relative_estimator = RelativeTwistEstimator(args.ema_alpha)
+
+    try:
+        upper_reader.start()
+        forearm_reader.start()
+        print(
+            f"IMU770 connected: upper={args.upper_port}, forearm={args.forearm_port}, "
+            f"{args.baudrate} baud, read-only"
+        )
+        print("Quaternion: Sensor->World [w,x,y,z]; upper-arm axis: local +X")
+
+        startup_deadline = time.monotonic() + args.startup_timeout
+        while upper_reader.stats.valid_frames == 0 or forearm_reader.stats.valid_frames == 0:
+            _raise_reader_error(upper_reader, forearm_reader)
+            if time.monotonic() >= startup_deadline:
+                missing = []
+                if upper_reader.stats.valid_frames == 0:
+                    missing.append(f"upper ({args.upper_port})")
+                if forearm_reader.stats.valid_frames == 0:
+                    missing.append(f"forearm ({args.forearm_port})")
+                raise RuntimeError("no valid quaternion frames from " + " and ".join(missing))
+            time.sleep(0.005)
+
+        input_fn("Hold the aligned zero pose still, then press Enter to calibrate...")
+        print(f"Calibrating for {args.calibration_seconds:.2f} s; keep both IMUs still...")
+        calibration_pairs: list[tuple[np.ndarray, np.ndarray]] = []
+        calibration_deadline = time.monotonic() + args.calibration_seconds
+        while time.monotonic() < calibration_deadline:
+            _raise_reader_error(upper_reader, forearm_reader)
+            pair = synchronizer.pop_pair()
+            if pair is None:
+                time.sleep(0.001)
+                continue
+            upper, forearm, _ = pair
+            if upper.quaternion_wxyz is None or forearm.quaternion_wxyz is None:
+                continue
+            try:
+                upper_q = normalize_quaternion(upper.quaternion_wxyz)
+                forearm_q = normalize_quaternion(forearm.quaternion_wxyz)
+            except ValueError:
+                continue
+            calibration_pairs.append((upper_q, forearm_q))
+        if len(calibration_pairs) < 2:
+            raise RuntimeError(
+                f"calibration needs at least 2 synchronized valid pairs; received {len(calibration_pairs)}"
+            )
+        world_estimator.calibrate([upper for upper, _ in calibration_pairs])
+        relative_estimator.calibrate(calibration_pairs)
+        print(f"Calibration complete: {len(calibration_pairs)} synchronized pairs. Ctrl+C to stop.")
+
+        print_interval = 1.0 / args.print_hz
+        last_print = float("-inf")
+        with CsvRecorder(args.csv) as recorder:
+            while True:
+                pair = synchronizer.pop_pair()
+                if pair is None:
+                    _raise_reader_error(upper_reader, forearm_reader)
+                    time.sleep(0.001)
+                    continue
+                upper, forearm, gap_ns = pair
+                if upper.quaternion_wxyz is None or forearm.quaternion_wxyz is None:
+                    continue
+                try:
+                    world = world_estimator.update(upper.quaternion_wxyz)
+                    relative = relative_estimator.update(upper.quaternion_wxyz, forearm.quaternion_wxyz)
+                except ValueError:
+                    continue
+                recorder.write(upper, forearm, gap_ns, world, relative)
+
+                now = time.monotonic()
+                if now - last_print >= print_interval:
+                    upper_stats, forearm_stats = upper_reader.stats, forearm_reader.stats
+                    print(
+                        f"world={world.filtered_deg:+8.2f} deg  "
+                        f"relative={relative.filtered_deg:+8.2f} deg  "
+                        f"difference={world.filtered_deg - relative.filtered_deg:+8.2f} deg  "
+                        f"sync={gap_ns / 1e6:5.2f} ms  "
+                        f"fps=({upper_stats.fps:5.1f},{forearm_stats.fps:5.1f})  "
+                        f"errors=({upper_stats.checksum_errors + upper_stats.parser_errors},"
+                        f"{forearm_stats.checksum_errors + forearm_stats.parser_errors})"
+                    )
+                    last_print = now
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+        return 0
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        upper_reader.close()
+        forearm_reader.close()
+        upper_stats, forearm_stats = upper_reader.stats, forearm_reader.stats
+        print(
+            f"Summary: upper_valid={upper_stats.valid_frames}, forearm_valid={forearm_stats.valid_frames}, "
+            f"sync_rejected={synchronizer.rejected_samples}, "
+            f"tid_drops=({upper_stats.tid_drops},{forearm_stats.tid_drops})"
+        )
+
+
+def main() -> int:
+    return run(build_argument_parser().parse_args())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
