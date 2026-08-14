@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Dry-run or execute one small relative joint move.")
     parser.add_argument("--joint", required=True, choices=JOINT_NAMES)
     parser.add_argument("--delta-deg", required=True, type=float)
-    parser.add_argument("--execute", action="store_true", help="actually Servo On and send the move")
+    parser.add_argument("--execute", action="store_true", help="send the requested move after vendor startup")
     parser.add_argument("--monitor-seconds", type=float, default=1.0)
     parser.add_argument("--command-dt", type=float, default=0.05, help="safety control period in seconds")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -56,7 +56,7 @@ def main() -> int:
         print(f"Delta: {args.delta_deg:.6f} deg (requested)")
 
         if not args.execute:
-            print("\nDRY-RUN: no Servo On and no motion command were issued.")
+            print("\nDRY-RUN: vendor startup used Servo On; no post-startup target was issued.")
             print("Re-run with --execute only after checking the setup and emergency stop.")
         else:
             print("\nEXECUTE requested: direction/zero/limits still require hardware validation.")

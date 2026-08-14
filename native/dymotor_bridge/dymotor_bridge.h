@@ -33,6 +33,7 @@ typedef struct ArmOpenConfig {
 } ArmOpenConfig;
 
 /* All functions return 0 on success and a negative value on failure. */
+/* Opens the SDK session and runs pose_control_get_pvct.c startup through Servo On. */
 ARM_API int arm_open(const ArmOpenConfig *config);
 ARM_API int arm_enable(void);
 ARM_API int arm_disable(void);

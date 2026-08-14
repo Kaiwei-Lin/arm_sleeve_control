@@ -78,7 +78,7 @@ def main() -> int:
             print(f"  first SDK request: {semantic_to_sdk_position(joint, first[name]): .6f} rad")
 
         if not args.execute:
-            print("\nDRY RUN: no Servo On and no position command were issued.")
+            print("\nDRY RUN: vendor startup used Servo On; no post-startup target was issued.")
         else:
             print("\nEXECUTE requested: enabling and sending the complete manual absolute targets through SafetyController.")
             controller.enable()

@@ -66,22 +66,14 @@ static void sleep_prefill_cycle(void)
 #endif
 }
 
-static void wait_for_fast_feedback(int period_ms)
+static void wait_one_second(void)
 {
-    uint64_t remaining_ms = (uint64_t)(unsigned int)period_ms * 2U;
-    while (remaining_ms > 0U) {
-        const unsigned int chunk_ms = remaining_ms > 1000U ? 1000U : (unsigned int)remaining_ms;
 #ifdef _WIN32
-        Sleep((DWORD)chunk_ms);
+    Sleep(1000);
 #else
-        const struct timespec delay = {
-            (time_t)(chunk_ms / 1000U),
-            (long)(chunk_ms % 1000U) * 1000000L
-        };
-        (void)nanosleep(&delay, NULL);
+    const struct timespec delay = {1, 0};
+    (void)nanosleep(&delay, NULL);
 #endif
-        remaining_ms -= chunk_ms;
-    }
 }
 
 static int servo_off_all(void)
@@ -122,6 +114,42 @@ static void release_session(int request_servo_off)
     g_diagnostics = 0;
 }
 
+static void run_vendor_startup_pipeline(void)
+{
+    int sample;
+    int joint;
+
+    /* Keep this sequence identical to pose_control_get_pvct.c. */
+    robot_StateMachine(g_arm.ctx, 0x80);
+    robot_StateMachine(g_arm.ctx, 1);
+
+    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
+        while (!robot_motor_setHeartbeat(g_arm.motors[joint], 0)) {
+        }
+    }
+    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
+        while (!robot_motor_set_control_mode(
+            g_arm.motors[joint],
+            MOTOR_CTRL_MODE_POSITION)) {
+        }
+    }
+    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
+        robot_motor_set_pos(g_arm.motors[joint], 0.0f, 0.0f, 0.0f);
+    }
+    for (sample = 0; sample < ARM_PREFILL_COUNT; ++sample) {
+        robot_motor_set_big_pose(g_arm.ctx);
+        sleep_prefill_cycle();
+    }
+    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
+        while (!robot_motor_set_control_world(
+            g_arm.motors[joint],
+            CTRL_SERVO_ON)) {
+        }
+    }
+    g_arm.enabled = 1;
+    wait_one_second();
+}
+
 static int validate_open_config(const ArmOpenConfig *config)
 {
     int i;
@@ -147,72 +175,6 @@ static int validate_open_config(const ArmOpenConfig *config)
         }
     }
     return 0;
-}
-
-static int discover_required_motors(const ArmOpenConfig *config)
-{
-    RobotMotorListHandle list = NULL;
-    MotorArray array;
-    int matches[ARM_JOINT_COUNT] = {0};
-    int i;
-    int joint;
-    int object_list_created = 0;
-    int result = 0;
-
-    memset(&array, 0, sizeof(array));
-    list = motorlist_create();
-    if (list == NULL) {
-        return fail(-3, "motorlist_create failed");
-    }
-    if (!get_robot_motorlist(g_arm.ctx, list)) {
-        result = fail(-3, "get_robot_motorlist failed");
-        goto done;
-    }
-
-    robot_create_motorObjectList(g_arm.ctx, list, &array);
-    object_list_created = 1;
-    if (array.count < 0 || array.count > 16) {
-        result = fail(-3, "SDK returned invalid motor count: %d", array.count);
-        if (array.count < 0) {
-            array.count = 0;
-        } else {
-            array.count = 16;
-        }
-        goto done;
-    }
-    for (i = 0; i < array.count; ++i) {
-        unsigned short motor_id = 0;
-        unsigned short can_id = 0;
-        if (array.robotmotors[i] == NULL) {
-            result = fail(-3, "SDK returned a null motor in the discovery list");
-            goto done;
-        }
-        robot_motor_get_motor_id(array.robotmotors[i], &motor_id, &can_id);
-        for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-            if (motor_id == config->motor_ids[joint] && can_id == config->can_ids[joint]) {
-                ++matches[joint];
-            }
-        }
-    }
-    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-        if (matches[joint] != 1) {
-            result = fail(
-                -3,
-                "required motor id=%u CAN=%u was discovered %d time(s)",
-                (unsigned)config->motor_ids[joint],
-                (unsigned)config->can_ids[joint],
-                matches[joint]
-            );
-            goto done;
-        }
-    }
-
-done:
-    if (object_list_created) {
-        motorObjectlist_destroy(g_arm.ctx, &array);
-    }
-    motorlist_destroy(list);
-    return result;
 }
 
 int arm_open(const ArmOpenConfig *config)
@@ -244,11 +206,6 @@ int arm_open(const ArmOpenConfig *config)
         return -2;
     }
 
-    result = discover_required_motors(config);
-    if (result != 0) {
-        release_session(0);
-        return result;
-    }
     if (!robot_set_fast_mode(g_arm.ctx, config->fast_mode)) {
         fail(-2, "robot_set_fast_mode failed");
         release_session(0);
@@ -273,12 +230,8 @@ int arm_open(const ArmOpenConfig *config)
         }
     }
 
-    /* Opening is motion-command-free: no NMT transition and no Servo command.
-       PVCTFast reads an SDK cache and has no validity return, so allow it time
-       to populate before reporting the session as open. */
-    wait_for_fast_feedback(config->fast_mode);
-
     g_arm.open = 1;
+    run_vendor_startup_pipeline();
     return 0;
 }
 
@@ -385,10 +338,6 @@ void arm_set_diagnostics(int enabled)
 
 int arm_enable(void)
 {
-    JointFeedback states[ARM_JOINT_COUNT];
-    int sample;
-    int joint;
-
     if (!g_arm.open) {
         return fail(-2, "arm is not open");
     }
@@ -396,49 +345,7 @@ int arm_enable(void)
         return 0;
     }
 
-    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-        if (read_joint_feedback(joint, &states[joint]) != 0) {
-            return -4;
-        }
-        if (states[joint].error != 0) {
-            return fail(
-                -4,
-                "motor fault prevents Servo On for joint %d: error=%u",
-                joint,
-                (unsigned)states[joint].error
-            );
-        }
-    }
-
-    /* This is the first state-changing boundary and is only reached after an
-       explicit enable request and valid, fault-free feedback from all joints. */
-    robot_StateMachine(g_arm.ctx, 0x80);
-    robot_StateMachine(g_arm.ctx, 1);
-    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-        if (!robot_motor_set_control_mode(g_arm.motors[joint], MOTOR_CTRL_MODE_POSITION)) {
-            (void)servo_off_all();
-            return fail(-5, "failed to set position mode for joint %d", joint);
-        }
-    }
-
-    /* Seed every disabled motor with its measured position before Servo On. */
-    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-        robot_motor_set_pos(g_arm.motors[joint], states[joint].position, 0.0f, 0.0f);
-        robot_motor_set_position(g_arm.motors[joint], states[joint].position);
-    }
-    /* Match the vendor position example's bounded 45-cycle prefill. */
-    for (sample = 0; sample < ARM_PREFILL_COUNT; ++sample) {
-        robot_motor_set_big_pose(g_arm.ctx);
-        sleep_prefill_cycle();
-    }
-
-    for (joint = 0; joint < ARM_JOINT_COUNT; ++joint) {
-        if (!robot_motor_set_control_world(g_arm.motors[joint], CTRL_SERVO_ON)) {
-            (void)servo_off_all();
-            return fail(-5, "Servo On failed for joint %d", joint);
-        }
-    }
-    g_arm.enabled = 1;
+    run_vendor_startup_pipeline();
     return 0;
 }
 

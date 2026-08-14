@@ -114,7 +114,7 @@ def main() -> int:
             controller.set_joint_positions(startup, dt=1.0 / phase3.control_hz)
             state = RuntimeState.ARMED
         elif args.robot == "dymotor":
-            print("DRY RUN: DyMotor connected for PVCT only; Servo On is disabled.")
+            print("DRY RUN: vendor startup used Servo On; no post-startup sleeve target is sent.")
 
         period = 1.0 / phase3.control_hz
         started = next_tick = last_print = time.monotonic()

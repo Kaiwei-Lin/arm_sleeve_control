@@ -15,7 +15,7 @@ from sleeve_arm.robot import DyMotorArm
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Read three DyMotor PVCT streams without motion.")
+    parser = argparse.ArgumentParser(description="Run vendor startup and read DyMotor PVCT streams.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--interval", type=float, default=0.2, help="print interval in seconds")
     parser.add_argument("--library", type=Path, help="path to libdymotor_bridge.so")
@@ -51,7 +51,7 @@ def main() -> int:
     exit_code = 0
     try:
         controller.connect()
-        print("Connected; Servo remains OFF. Press Ctrl+C to stop.\n")
+        print("Connected through vendor startup (Servo ON); no post-startup target is sent. Ctrl+C stops.\n")
         while True:
             print_states(controller)
             time.sleep(args.interval)

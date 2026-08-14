@@ -131,6 +131,7 @@ def test_connect_enables_requested_diagnostics_before_feedback_reads() -> None:
     robot = DyMotorArm(load_robot_config(), diagnostics=True)
     robot._load_library = lambda: library  # type: ignore[method-assign, return-value]
     robot.connect()
+    assert robot.enabled
     robot.close()
     assert library.diagnostic_calls == [1]
 

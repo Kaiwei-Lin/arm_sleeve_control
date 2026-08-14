@@ -120,11 +120,14 @@ class DyMotorArm(RobotArm):
         try:
             self._check(self._lib.arm_open(ctypes.byref(config)), "arm_open")
             self.connected = True
+            # arm_open follows the vendor example through Servo On.
+            self.enabled = True
             if self._diagnostics:
                 self.set_bridge_diagnostics(True)
         except BaseException:
             self._lib.arm_close()
             self.connected = False
+            self.enabled = False
             raise
 
     def enable(self) -> None:

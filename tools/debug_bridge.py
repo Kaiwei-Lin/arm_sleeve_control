@@ -14,7 +14,9 @@ from sleeve_arm.robot import DyMotorArm
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Read raw DyMotor bridge PVCT without Servo On or motion.")
+    parser = argparse.ArgumentParser(
+        description="Run the vendor startup pipeline, then read raw DyMotor bridge PVCT."
+    )
     parser.add_argument("--joint", choices=("all", *JOINT_NAMES), default="all")
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--interval", type=float, default=0.5)
@@ -57,7 +59,7 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     finally:
-        # A never-enabled session closes without any Servo or position command.
+        # arm_open includes the vendor Servo On sequence; close sends Servo Off.
         robot.close()
 
 

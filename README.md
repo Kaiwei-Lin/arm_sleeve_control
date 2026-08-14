@@ -11,7 +11,7 @@ Python tools -> SafetyController -> DyMotorArm (ctypes)
 
 Phase 1 原有三个机械臂关节的位置控制与 PVCT 读取现已扩展加入大臂旋转电机。Phase 2 新增袖套、Optional 双 IMU、时间同步和数据记录。Phase 3 新增临时规则式 CH2 → 肘关节小范围验证链路；大臂旋转目前仅支持独立小角度调试，尚未接入 IMU 或模型控制。
 
-默认行为不会产生运动：`test_joint.py` 和 `test_three_joints.py` 只有显式加入 `--execute` 才会 Servo On 和发送目标。
+当前 DyMotor 连接严格复用厂家 `pose_control_get_pvct.c` 的启动 pipeline，因此任何连接都会执行状态机切换、位置模式、45 次 `big_pose` 预填充和 Servo On。`--execute` 只控制是否在启动完成后继续发送工具请求的目标；即使不带 `--execute`，也必须按真机使能操作对待。
 
 ## Phase 2 — Sensor Foundation
 
@@ -102,8 +102,8 @@ python tools/record_sensors.py --fake --duration 2
 已确认：
 
 - `robot_create` + `robot_config_net` 创建并连接主板上下文。
-- 厂家位置示例在 motor object 建立后执行主板状态机 `0x80 → 1`，但实机已确认该调用不适合放在只读连接路径；bridge 的 `arm_open` 不执行状态机、Servo 或位置命令。
-- `get_robot_motorlist` + `robot_create_motorObjectList` 枚举电机；bridge 要求 22/CAN2、23/CAN2、25/CAN2、24/CAN2 各精确出现一次。
+- bridge 的 `arm_open` 在 motor object 建立后严格执行厂家示例的主板状态机 `0x80 → 1`、heartbeat、位置模式、预填充和 Servo On 顺序。
+- bridge 与厂家示例一样直接用配置的 ID/CAN 创建 motor object；启动后的逐电机 PVCT 校验负责确认 22/CAN2、23/CAN2、25/CAN2、24/CAN2 均可用。
 - `robot_motor_get_PVCTFast` 提供 position、velocity、estimated torque、state 和 error 等缓存反馈。
 - `robot_motor_set_control_mode(..., MOTOR_CTRL_MODE_POSITION)` 切换位置模式，`CTRL_SERVO_ON/OFF` 控制使能。
 - `robot_motor_set_position` 暂存每台电机目标，`robot_motor_set_big_pose` 一次发送已注册电机的大包；三关节控制复用此 batch 路径。
@@ -164,7 +164,7 @@ export LD_LIBRARY_PATH="$PWD/third_party/dymotor_sdk/lib${LD_LIBRARY_PATH:+:$LD_
 - 主板 ID、双方 IP、端口、fast-mode 参数
 - 厂家 state/error 代码含义和反馈超时特性
 
-## Step 1：只读取 PVCT
+## Step 1：按厂家 pipeline 启动后读取 PVCT
 
 确保机械臂周围无人、可立即断电/急停，然后运行：
 
@@ -172,11 +172,11 @@ export LD_LIBRARY_PATH="$PWD/third_party/dymotor_sdk/lib${LD_LIBRARY_PATH:+:$LD_
 python tools/read_pvct.py
 ```
 
-它只连接、验证三台电机并持续读取；不会执行状态机切换、Servo On/Off 或位置命令。输出中的 position/velocity/torque 已按配置的方向与零位转换为语义坐标。按 `Ctrl+C` 后只关闭未使能的 SDK 会话。
+它会对配置中的四台电机执行厂家启动 pipeline，然后持续读取 PVCT。启动包含 `StateMachine(0x80 → 1)`、关闭 heartbeat、位置模式、`set_pos(0,0,0)`、45 次 `big_pose`、Servo On 和等待 1 秒；不会在此后调用 `robot_motor_set_position`。输出中的 position/velocity/torque 已按配置的方向与零位转换为语义坐标。按 `Ctrl+C` 后执行 Servo Off 和 close。
 
-首先核对：三个 motor/CAN 地址正确、反馈有限且稳定、error 均为 0；不要在存在错误或映射不符时继续。
+首先核对：四个 motor/CAN 地址正确、反馈有限且稳定、error 均为 0；不要在存在错误或映射不符时继续。
 
-### PVCT bridge 只读诊断
+### PVCT bridge 原始诊断
 
 修改 native bridge 后必须先重新构建，并确认不存在或未加载旧副本：
 
@@ -186,7 +186,7 @@ cmake --build build --config Release
 find . -name 'libdymotor_bridge.so' -ls
 ```
 
-然后用显式路径运行只读诊断：
+然后用显式路径运行诊断：
 
 ```bash
 python tools/debug_bridge.py \
@@ -195,11 +195,11 @@ python tools/debug_bridge.py \
     --library "$PWD/build/native/dymotor_bridge/libdymotor_bridge.so"
 ```
 
-该工具只连接、确认配置中的 CAN2/motor ID22/23/25、重复读取 PVCT 并关闭；不会执行状态机切换、Servo On/Off、控制模式切换或位置发送。它同时打印 C 侧原始诊断、Python 收到的 `wrapper_status`、state/bus/error 十进制和十六进制，以及实际加载的 `.so` 绝对路径。`bus == 0` 会被判定为遥测缓存未就绪并返回 `wrapper_status=-4`，不会把全零输出当作有效反馈。
+该工具对配置中的 CAN2/motor ID22/23/25/24 运行与厂家示例相同的启动 pipeline，再重复读取 PVCT 并关闭。它同时打印 C 侧原始诊断、Python 收到的 `wrapper_status`、state/bus/error 十进制和十六进制，以及实际加载的 `.so` 绝对路径。`bus == 0` 仍会被判定为无效反馈并返回 `wrapper_status=-4`，不会把全零输出当作有效反馈。
 
-厂家示例不是只读程序：读取 PVCT 前已经执行状态机切换、位置模式、Servo On 和位置发送。不要直接运行它来做静止诊断，也不要为了得到非零 PVCT 而把这些调用加回 `debug_bridge.py`。如果严格只读连接仍无法获得有效缓存，需要厂家确认“Servo Off 状态下启用 fast telemetry”的安全初始化顺序。
+bridge 的启动顺序现与厂家示例一致：`robot_create` → `robot_config_net` → `robot_set_fast_mode` → `robot_create_motor` → `StateMachine(0x80)` → `StateMachine(1)` → `setHeartbeat(0)` → position mode → `set_pos(0,0,0)` → 45 次 `big_pose` → Servo On → 等待 1 秒 → 首次 PVCT。项目不会复制示例循环中的固定 `-0.45 rad` 运动目标。
 
-与厂家示例对照时，先将示例中的 motor 改为相同的 ID/CAN，并删除或注释其 Servo On、位置模式和位置发送部分，仅保留初始化与 `robot_motor_get_PVCTFast` 读取。分别记录：
+与厂家示例对照时，使用相同 motor/CAN，并分别记录：
 
 ```text
 vendor FastErrorCode
@@ -225,7 +225,7 @@ Phase 3 配置位于 `configs/phase3.yaml`。`input_min`/`input_max` 是两个�
 
 Watchdog 使用 monotonic timestamp：超过 `sensor_timeout_ms` 不产生新目标并保持最后安全目标；超过 `hard_timeout_ms` 抛出故障并进入 Servo Off/close。无效、缺失或非有限 CH2 不会产生命令。
 
-严格按以下顺序验收；只有最后一步可能 Servo On 并产生真实机械臂运动。
+严格按以下顺序验收；连接 DyMotor 的第 4、5 步都会执行厂家 Servo On pipeline，只有第 5 步会继续发送袖套生成的位置目标。
 
 ### 1. 标定 CH2（不连接机械臂）
 
@@ -255,7 +255,7 @@ python tools/run_sleeve_elbow.py --sleeve real --robot fake
 python tools/run_sleeve_elbow.py --sleeve real --robot dymotor
 ```
 
-此模式连接并读取三路 PVCT、计算和预览 Safety 结果，但不 Servo On、不发送位置。
+此模式会执行厂家 Servo On pipeline、读取 PVCT 并预览 Safety 结果，但不发送袖套生成的位置目标。
 
 ### 5. 真实 Sleeve + DyMotor execute
 
@@ -325,13 +325,13 @@ python tools/run_model_control.py --sleeve real --robot fake --reuse-calibration
 尚无有效活动预测时保持机器人启动位置；CH2 肘部预测仍继续更新。日志同时输出
 `action_conf`、`angle_conf`、`moving`、模型角度与推理时间。
 
-严格按以下顺序进行硬件验证；只有最后一步可能产生真实运动：
+严格按以下顺序进行硬件验证；DyMotor dry-run 也会执行厂家 Servo On pipeline，只有最后一步会发送模型生成的位置目标：
 
 ```powershell
 # 1. 真实 Sleeve + FakeRobot（默认现场标定）
 python tools/run_model_control.py --sleeve real --robot fake
 
-# 2. 真实 Sleeve + DyMotor 只读 dry-run；不 Servo On、不发位置命令
+# 2. 真实 Sleeve + DyMotor dry-run；厂家 pipeline 会 Servo On，但不发模型目标
 python tools/run_model_control.py --sleeve real --robot dymotor
 
 # 3. 现场急停、监护、零位和限位均确认后才执行
@@ -339,7 +339,7 @@ python tools/run_model_control.py --sleeve real --robot dymotor --execute
 ```
 
 模型包导入、权重加载、标定、传感器有效性和模型预热均在机器人连接/使能前完成。
-真实运动仍必须经过 `SafeArmController`，且必须显式提供 `--execute`。
+模型位置目标仍必须经过 `SafeArmController`，且必须显式提供 `--execute`；但连接阶段的厂家 Servo On 不受该开关控制。
 
 ## Phase 4 — Legacy FlexPredictor Notes（已废弃，请勿执行）
 
@@ -424,7 +424,7 @@ action 接受模型的 `Forward`、`Lateral`、`Backward` 标签，也兼容整�
 
 模型概率必须至少包含三个 `[0,1]` 有限值；当前 action 对应概率作为 confidence telemetry。`min_action_confidence` 按 Phase 4 约束暂不参与过滤，避免低置信度造成突然回零。新 action 必须连续满足 `required_consecutive_frames` 才切换；候选未稳定时保持上一条已接受肩部 intent。无效 action/概率/角度或模型异常时保持最后安全目标，连续达到配置阈值则 FAULT 并安全退出。IMU 当前不传给模型，保持 Optional，可全部关闭。
 
-严格按以下顺序验证；只有最后一步可能 Servo On：
+严格按以下顺序验证；DyMotor dry-run 也会执行厂家 Servo On pipeline，只有最后一步会发送模型目标：
 
 ### 0. 每次穿戴后的快速标定（不连接 Robot）
 
@@ -456,7 +456,7 @@ python tools/run_model_control.py --sleeve real --robot fake
 python tools/run_model_control.py --sleeve real --robot dymotor
 ```
 
-该步骤只读取真实 PVCT、推理、映射并预览 Safety 结果；不 Servo On、不发送位置。
+该步骤执行厂家 Servo On pipeline，再读取真实 PVCT、推理、映射并预览 Safety 结果；不发送模型生成的位置目标。
 
 ### 4. 最终真机 execute
 
@@ -478,7 +478,7 @@ python tools/test_joint.py \
     --delta-deg 1
 ```
 
-程序从当前实测位置计算相对目标，不会跳到绝对零位，也不会 Servo On。确认打印的当前值、请求目标、安全限制和方向状态后，现场人员就位、急停可用时才执行：
+程序在厂家启动 pipeline 后从实测位置计算相对目标；不带 `--execute` 时不发送这个增量目标，但连接过程已经 Servo On。确认打印值后才执行：
 
 ```bash
 python tools/test_joint.py \
@@ -487,7 +487,7 @@ python tools/test_joint.py \
     --execute
 ```
 
-`--execute` 仍经过 SafetyController：稳定反馈 → 当前位预装 → Servo On → 再读三路反馈 → 小步长目标 → 一次 batch flush → 持续监控 → Servo Off → close。
+`--execute` 仍经过 SafetyController：厂家启动并取得稳定反馈 → 小步长目标 → 一次 batch flush → 持续监控 → Servo Off → close。
 
 ## Step 3：依次验证单关节
 
@@ -499,7 +499,7 @@ python tools/test_joint.py \
 
 每个关节先 dry-run，再用 **不超过 1°** 的单次 `--execute`。若方向与语义不一致，停止并只修改配置中的 `direction`；不要修改业务代码。验证后才把 `direction_status` 改为 `VALIDATED` 并记录验证过程。
 
-新增 ID24 大臂旋转电机也复用同一个安全单关节工具。先只读连接并预览目标：
+新增 ID24 大臂旋转电机也复用同一个安全单关节工具。先运行厂家启动 pipeline 并预览目标：
 
 ```bash
 python tools/test_joint.py \
@@ -516,7 +516,7 @@ python tools/test_joint.py \
     --execute
 ```
 
-只有第二条命令会 Servo On 并发送位置目标。测试从当前反馈位置增加 1°，不会寻找零位或限位；若方向错误立即停止，修正 `configs/robot.yaml` 后再重新 dry-run。
+两条命令连接时都会执行厂家 Servo On pipeline；只有第二条会发送额外的 1° 位置目标。测试不会寻找零位或限位；若方向错误立即停止。
 
 ## Step 4：三个关节联合小幅运动
 
@@ -543,12 +543,11 @@ bridge 先分别更新三个目标缓存，再调用一次 `robot_motor_set_big_
 
 ## 安全设计与停止方法
 
-- 启动不会自动运动；`--execute` 是唯一的运动许可开关。
+- DyMotor 启动严格执行厂家 pipeline，包括 `set_pos(0,0,0)`、45 次 `big_pose` 和 Servo On；任何连接都必须清空工作区、准备急停并按可能运动处理。
 - `SafeArmController` 是强制路径；tools 不直接调用 backend 的位置发送 API。
-- Servo On 前必须精确发现三台目标电机，并连续取得多次无错误、有限反馈；相邻启动样本的位置变化不得超过各关节 `max_position_step`。
-- C bridge 在 Servo On 前把实测当前位置预装 45 次，再使能，避免陈旧目标造成跳变。
+- 厂家 pipeline 完成并等待 1 秒后，Python 才读取和验证四台电机的 PVCT；全零、非有限值或非零 error 仍会失败并 Servo Off/close。
 - 已配置的 min/max 会 clamp；`max_position_step` 与 `max_velocity * dt` 同时存在时取更严格者；配置 `max_velocity` 后也检查实测反馈速度。
-- 每次发送前 Python 和 C bridge 都复查三路反馈与 error；反馈/SDK 失败会停止发送并 Servo Off。
+- 每次发送前 Python 和 C bridge 都复查四路反馈与 error；反馈/SDK 失败会停止发送并 Servo Off。
 - `max_tracking_error` 配置后会监控指令和反馈偏差。
 - `Ctrl+C`、普通异常和工具退出都通过 `finally` 执行 Servo Off + close。
 
@@ -578,7 +577,7 @@ sleeve_arm/control/                SafetyController 与纯安全函数
 sleeve_arm/sources/                真实与 Fake Sleeve/IMU Source
 sleeve_arm/sync/                   Sleeve 主时间轴同步器
 sleeve_arm/recording/              SensorSample CSV Recorder
-tools/read_pvct.py                 只读硬件验证
+tools/read_pvct.py                 厂家启动 pipeline + PVCT 验证
 tools/read_sleeve.py               完整 Sleeve 只读工具
 tools/read_imu.py                  单 IMU 只读/Fake 工具
 tools/test_sensor_sync.py          Fake 时间同步验证
