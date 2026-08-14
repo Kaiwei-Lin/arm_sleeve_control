@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import struct
+import threading
+import time
+from collections import deque
 from math import cos, radians, sin
 
 import numpy as np
@@ -38,6 +41,27 @@ def axis_angle(axis: tuple[float, float, float], angle_deg: float) -> tuple[floa
     unit /= np.linalg.norm(unit)
     half = radians(angle_deg) / 2.0
     return (cos(half), *(unit * sin(half)))
+
+
+def sample_at(timestamp_ns: int, tid: int = 1) -> demo.Imu770Sample:
+    return demo.Imu770Sample(
+        host_timestamp_ns=timestamp_ns,
+        tid=tid,
+        device_timestamp_us=None,
+        dataready_timestamp_us=None,
+        accel_mps2=None,
+        gyro_dps=None,
+        euler_deg=None,
+        quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+    )
+
+
+def wait_until(predicate: object, timeout_s: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not predicate():  # type: ignore[operator]
+        if time.monotonic() >= deadline:
+            raise AssertionError("condition was not met before timeout")
+        time.sleep(0.005)
 
 
 def test_parser_decodes_quaternion_only_frame() -> None:
@@ -200,3 +224,111 @@ def test_estimators_require_calibration() -> None:
 def test_estimator_rejects_invalid_ema_alpha(alpha: float) -> None:
     with pytest.raises(ValueError, match="ema_alpha"):
         demo.TwistEstimator(ema_alpha=alpha)
+
+
+def test_synchronizer_chooses_nearest_pair_and_consumes_samples_once() -> None:
+    synchronizer = demo.SampleSynchronizer(max_gap_ns=20_000_000)
+    synchronizer.add_upper(sample_at(100_000_000, 1))
+    synchronizer.add_upper(sample_at(130_000_000, 2))
+    synchronizer.add_forearm(sample_at(125_000_000, 3))
+
+    upper, forearm, gap_ns = synchronizer.pop_pair()  # type: ignore[misc]
+
+    assert upper.host_timestamp_ns == 130_000_000
+    assert forearm.host_timestamp_ns == 125_000_000
+    assert gap_ns == 5_000_000
+    assert synchronizer.pop_pair() is None
+
+
+def test_synchronizer_rejects_stale_sample_then_recovers() -> None:
+    synchronizer = demo.SampleSynchronizer(max_gap_ns=20_000_000)
+    synchronizer.add_upper(sample_at(100_000_000, 1))
+    synchronizer.add_forearm(sample_at(130_000_000, 2))
+
+    assert synchronizer.pop_pair() is None
+    synchronizer.add_upper(sample_at(135_000_000, 3))
+
+    assert synchronizer.pop_pair()[2] == 5_000_000  # type: ignore[index]
+
+
+def test_synchronizer_bounds_each_input_queue() -> None:
+    synchronizer = demo.SampleSynchronizer(max_gap_ns=20_000_000, max_queue=2)
+    synchronizer.add_upper(sample_at(1_000_000, 1))
+    synchronizer.add_upper(sample_at(2_000_000, 2))
+    synchronizer.add_upper(sample_at(3_000_000, 3))
+    synchronizer.add_forearm(sample_at(2_000_000, 4))
+
+    upper, _, _ = synchronizer.pop_pair()  # type: ignore[misc]
+
+    assert upper.host_timestamp_ns == 2_000_000
+
+
+class FakeSerial:
+    def __init__(self, chunks: list[bytes] | None = None, read_error: BaseException | None = None) -> None:
+        self.chunks = deque(chunks or [])
+        self.read_error = read_error
+        self.is_open = True
+        self.closed = threading.Event()
+
+    @property
+    def in_waiting(self) -> int:
+        return len(self.chunks[0]) if self.chunks else 0
+
+    def read(self, size: int) -> bytes:
+        if self.read_error is not None:
+            error, self.read_error = self.read_error, None
+            raise error
+        if self.chunks:
+            return self.chunks.popleft()
+        time.sleep(0.002)
+        return b""
+
+    def write(self, data: bytes) -> int:
+        raise AssertionError(f"read-only reader attempted to write {data!r}")
+
+    def close(self) -> None:
+        self.is_open = False
+        self.closed.set()
+
+
+def test_serial_reader_opens_8n1_and_delivers_real_parsed_sample() -> None:
+    raw = make_imu770_frame(21, _vector_tlv(0x41, 1_000_000, 0, 0, 0))
+    serial_port = FakeSerial([raw])
+    opened_with: dict[str, object] = {}
+    samples: list[demo.Imu770Sample] = []
+
+    def factory(**kwargs: object) -> FakeSerial:
+        opened_with.update(kwargs)
+        return serial_port
+
+    reader = demo.Imu770SerialReader("COM5", 460800, 0.05, samples.append, serial_factory=factory)
+    reader.start()
+    wait_until(lambda: len(samples) == 1)
+    reader.close()
+
+    assert opened_with == {
+        "port": "COM5",
+        "baudrate": 460800,
+        "timeout": 0.05,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+    }
+    assert samples[0].tid == 21
+    assert reader.stats.valid_frames == 1
+    assert serial_port.closed.is_set()
+
+
+def test_serial_reader_surfaces_read_failure_and_closes_promptly() -> None:
+    serial_port = FakeSerial(read_error=OSError("device disconnected"))
+    reader = demo.Imu770SerialReader(
+        "COM6", 460800, 0.05, lambda sample: None, serial_factory=lambda **kwargs: serial_port
+    )
+
+    reader.start()
+    wait_until(lambda: reader.error is not None)
+    reader.close()
+
+    assert isinstance(reader.error, OSError)
+    assert "disconnected" in str(reader.error)
+    assert serial_port.closed.is_set()

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import struct
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from math import atan2, degrees
-from typing import Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -272,3 +274,167 @@ class RelativeTwistEstimator(_FilteredTwist):
         relative = self._relative(upper, forearm)
         delta = quaternion_multiply(quaternion_inverse(self._relative_zero), relative)
         return self._result(delta)
+
+
+class SampleSynchronizer:
+    def __init__(self, max_gap_ns: int, max_queue: int = 256) -> None:
+        if max_gap_ns <= 0:
+            raise ValueError("max_gap_ns must be positive")
+        if max_queue <= 0:
+            raise ValueError("max_queue must be positive")
+        self.max_gap_ns = int(max_gap_ns)
+        self._upper: deque[Imu770Sample] = deque(maxlen=max_queue)
+        self._forearm: deque[Imu770Sample] = deque(maxlen=max_queue)
+        self._lock = threading.Lock()
+        self.rejected_samples = 0
+
+    def add_upper(self, sample: Imu770Sample) -> None:
+        with self._lock:
+            self._upper.append(sample)
+
+    def add_forearm(self, sample: Imu770Sample) -> None:
+        with self._lock:
+            self._forearm.append(sample)
+
+    def pop_pair(self) -> tuple[Imu770Sample, Imu770Sample, int] | None:
+        with self._lock:
+            if not self._upper or not self._forearm:
+                return None
+            best_upper = best_forearm = 0
+            best_gap = abs(self._upper[0].host_timestamp_ns - self._forearm[0].host_timestamp_ns)
+            for upper_index, upper in enumerate(self._upper):
+                for forearm_index, forearm in enumerate(self._forearm):
+                    gap = abs(upper.host_timestamp_ns - forearm.host_timestamp_ns)
+                    if gap < best_gap:
+                        best_upper, best_forearm, best_gap = upper_index, forearm_index, gap
+            if best_gap <= self.max_gap_ns:
+                for _ in range(best_upper):
+                    self._upper.popleft()
+                    self.rejected_samples += 1
+                for _ in range(best_forearm):
+                    self._forearm.popleft()
+                    self.rejected_samples += 1
+                return self._upper.popleft(), self._forearm.popleft(), best_gap
+
+            if self._upper[0].host_timestamp_ns <= self._forearm[0].host_timestamp_ns:
+                self._upper.popleft()
+            else:
+                self._forearm.popleft()
+            self.rejected_samples += 1
+            return None
+
+
+@dataclass(frozen=True)
+class ReaderStats:
+    frames: int
+    valid_frames: int
+    checksum_errors: int
+    parser_errors: int
+    tid_drops: int
+    fps: float
+
+
+class Imu770SerialReader:
+    def __init__(
+        self,
+        port: str,
+        baudrate: int,
+        timeout_s: float,
+        on_sample: Callable[[Imu770Sample], None],
+        serial_factory: Callable[..., object] | None = None,
+    ) -> None:
+        if not port:
+            raise ValueError("serial port is required")
+        if baudrate <= 0 or timeout_s <= 0:
+            raise ValueError("baudrate and timeout_s must be positive")
+        self.port = port
+        self.baudrate = int(baudrate)
+        self.timeout_s = float(timeout_s)
+        self._on_sample = on_sample
+        self._serial_factory = serial_factory
+        self._serial: Any = None
+        self._parser = Imu770FrameParser()
+        self._error: BaseException | None = None
+        self._first_sample_ns: int | None = None
+        self._last_sample_ns: int | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        factory = self._serial_factory
+        if factory is None:
+            try:
+                import serial
+            except ImportError as exc:
+                raise RuntimeError("IMU770 serial input requires: pip install pyserial") from exc
+            factory = serial.Serial
+        try:
+            self._serial = factory(
+                port=self.port,
+                baudrate=self.baudrate,
+                timeout=self.timeout_s,
+                bytesize=8,
+                parity="N",
+                stopbits=1,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"failed to open IMU770 serial port {self.port}: {exc}") from exc
+        self._parser = Imu770FrameParser()
+        with self._lock:
+            self._error = None
+            self._first_sample_ns = None
+            self._last_sample_ns = None
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name=f"imu770-{self.port}", daemon=False)
+        self._thread.start()
+
+    @property
+    def error(self) -> BaseException | None:
+        with self._lock:
+            return self._error
+
+    @property
+    def stats(self) -> ReaderStats:
+        with self._lock:
+            first, last = self._first_sample_ns, self._last_sample_ns
+        elapsed = 0.0 if first is None or last is None else (last - first) / 1e9
+        valid = self._parser.valid_frame_count
+        fps = (valid - 1) / elapsed if valid > 1 and elapsed > 0.0 else 0.0
+        return ReaderStats(
+            frames=self._parser.frame_count,
+            valid_frames=valid,
+            checksum_errors=self._parser.checksum_error_count,
+            parser_errors=self._parser.parser_error_count,
+            tid_drops=self._parser.tid_drop_count,
+            fps=fps,
+        )
+
+    def close(self) -> None:
+        self._stop.set()
+        serial_port, self._serial = self._serial, None
+        if serial_port is not None and getattr(serial_port, "is_open", True):
+            serial_port.close()
+        thread, self._thread = self._thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(1.0, self.timeout_s * 3.0))
+
+    def _run(self) -> None:
+        serial_port = self._serial
+        try:
+            while not self._stop.is_set():
+                waiting = int(getattr(serial_port, "in_waiting", 0) or 0)
+                chunk = serial_port.read(max(1, min(waiting or 1, 4096)))
+                if not chunk:
+                    continue
+                for sample in self._parser.feed(chunk):
+                    with self._lock:
+                        self._first_sample_ns = self._first_sample_ns or sample.host_timestamp_ns
+                        self._last_sample_ns = sample.host_timestamp_ns
+                    self._on_sample(sample)
+        except BaseException as exc:
+            if not self._stop.is_set():
+                with self._lock:
+                    self._error = exc
