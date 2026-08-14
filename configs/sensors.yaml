@@ -24,6 +24,19 @@ sensors:
     baudrate: 460800
     timeout_s: 0.1
 
+# Optional dual-IMU upper-arm rotation. Enable only after both IMU endpoints
+# and the calibrated ID24 robot limits are ready.
+upper_arm_rotation:
+  enabled: false
+  upper_imu: imu1
+  reference_imu: imu2
+  # Parser order is [w,x,y,z]; interpreted as Sensor->World per the reference demo.
+  twist_axis: x
+  ema_alpha: 0.35
+  max_sync_ms: 20
+  calibration_seconds: 2.0
+  startup_timeout_s: 10.0
+
 # Software defaults for initial synchronization tests, not validated experiment parameters.
 synchronization:
   max_time_delta_ms: 20
