@@ -58,7 +58,7 @@ def main() -> int:
                 parser.error(f"{name} requires calibrated zero_position/min_position/max_position")
 
     action = ArmAction[args.action.upper()]
-    intent = manual_intent(action, args.shoulder_angle_deg, args.elbow_angle_deg)
+    intent = manual_intent(action, args.shoulder_angle_deg, args.elbow_angle_deg, args.upper_arm_rotation_deg)
     backend = FakeRobotArm(config) if args.robot == "fake" else DyMotorArm(config, args.library)
     controller = SafeArmController(backend, config)
     period = 1.0 / phase3.control_hz
@@ -70,8 +70,9 @@ def main() -> int:
         states = controller.read_joint_states()
         startup = {name: state.position for name, state in states.items()}
         mapped = ArmMapper(phase3.elbow, startup).map(intent)
-        if args.upper_arm_rotation_deg is not None:
-            mapped["upper_arm_rotation"] = math.radians(args.upper_arm_rotation_deg)
+        # import pdb;pdb.set_trace()
+        # if args.upper_arm_rotation_deg is not None:
+        #     mapped["upper_arm_rotation"] = math.radians(args.upper_arm_rotation_deg)
         goals = {name: clamp_position(config.joints[name], mapped[name]) for name in JOINT_NAMES}
         first = controller.preview_positions(mapped, dt=period)
 
