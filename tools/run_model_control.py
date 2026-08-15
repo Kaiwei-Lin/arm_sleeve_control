@@ -423,6 +423,9 @@ def main() -> int:
                                     sample, rotation_config, phase3.sensor_timeout_ms / 1000.0
                                 )
                                 rotation_result = rotation_estimator.update(*last_rotation_frames)
+                                print(
+                                    f"DEBUG: upper-arm rotation={rotation_result.difference_deg:+.2f}deg"
+                                )
                                 last_rotation_rad = math.radians(rotation_result.difference_deg)
                             except Exception as exc:
                                 rotation_invalid += 1
@@ -471,17 +474,17 @@ def main() -> int:
                                 f" upper_q={(upper.quat_w, upper.quat_x, upper.quat_y, upper.quat_z)}"
                                 f" reference_q={(reference.quat_w, reference.quat_x, reference.quat_y, reference.quat_z)}"
                             )
-                    print(
-                        f"state={state.name} sleeve_fps={source.stats.estimated_fps:.1f} "
-                        f"control_fps={cycles / max(now-started, 1e-9):.1f} "
-                        f"model_fps={predictions / max(now-started, 1e-9):.1f} age_ms={age*1000:.1f} "
-                        f"flex={shoulder_predictor.last_flex} action={intent.model_action} "
-                        f"action_conf={intent.confidence:.3f} angle_conf={intent.angle_confidence:.3f} "
-                        f"moving={intent.moving} angle_deg={intent.angle_deg:.2f} "
-                        f"inference_ms={intent.inference_ms:.3f} "
-                        f"targets_rad={last_safe} positions_rad={positions} tracking_rad={tracking} "
-                        f"invalid={invalid} stale={stale}{rotation_telemetry}"
-                    )
+                    # print(
+                    #     f"state={state.name} sleeve_fps={source.stats.estimated_fps:.1f} "
+                    #     f"control_fps={cycles / max(now-started, 1e-9):.1f} "
+                    #     f"model_fps={predictions / max(now-started, 1e-9):.1f} age_ms={age*1000:.1f} "
+                    #     f"flex={shoulder_predictor.last_flex} action={intent.model_action} "
+                    #     f"action_conf={intent.confidence:.3f} angle_conf={intent.angle_confidence:.3f} "
+                    #     f"moving={intent.moving} angle_deg={intent.angle_deg:.2f} "
+                    #     f"inference_ms={intent.inference_ms:.3f} "
+                    #     f"targets_rad={last_safe} positions_rad={positions} tracking_rad={tracking} "
+                    #     f"invalid={invalid} stale={stale}{rotation_telemetry}"
+                    # )
                     last_print = now
             next_tick += period
             time.sleep(max(0.0, next_tick - time.monotonic()))

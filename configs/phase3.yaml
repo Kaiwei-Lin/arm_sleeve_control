@@ -4,8 +4,8 @@ phase3:
     sleeve_channel: 2
 
     # Must be filled from tools/calibrate_sleeve_elbow.py before real Sleeve use.
-    input_min: 1
-    input_max: 576.5
+    input_min: 482
+    input_max: 1044
 
     invert_input: false
     deadzone: 0.02
@@ -18,7 +18,7 @@ phase3:
     # Fill from the two calibration postures; these are not robot limits.
     angle_range:
       min_deg: -5
-      max_deg: 180
+      max_deg: 135
 
     invert_output: false
 

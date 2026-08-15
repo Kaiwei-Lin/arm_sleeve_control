@@ -4,7 +4,7 @@ sensors:
   sleeve:
     enabled: true
     backend: serial_ascii
-    port: /dev/ttyUSB1
+    port: /dev/ttyUSB2
     baudrate: 115200
     timeout_s: 1.0
     delimiter: ";"
@@ -13,14 +13,14 @@ sensors:
   imu1:
     enabled: true
     backend: imu770_serial
-    port: /dev/ttyCH9344USB0
+    port: /dev/ttyCH9344USB3
     baudrate: 460800
     timeout_s: 0.1
 
   imu2:
     enabled: true
     backend: imu770_serial
-    port: /dev/ttyCH9344USB3
+    port: /dev/ttyCH9344USB0
     baudrate: 460800
     timeout_s: 0.1
 
