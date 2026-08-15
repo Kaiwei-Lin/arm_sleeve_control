@@ -5,8 +5,8 @@ phase3:
     elbow_flexion_limit_deg: 15 # 大于该值时，大臂旋转失效
 
     # Must be filled from tools/calibrate_sleeve_elbow.py before real Sleeve use.
-    input_min: 482
-    input_max: 1044
+    input_min: 1
+    input_max: 438
 
     invert_input: false
     deadzone: 0.02

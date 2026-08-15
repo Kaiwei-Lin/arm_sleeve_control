@@ -423,9 +423,6 @@ def main() -> int:
                                     sample, rotation_config, phase3.sensor_timeout_ms / 1000.0
                                 )
                                 rotation_result = rotation_estimator.update(*last_rotation_frames)
-                                print(
-                                    f"DEBUG: upper-arm rotation={rotation_result.difference_deg:+.2f}deg"
-                                )
                                 last_rotation_rad = math.radians(rotation_result.difference_deg)
                             except Exception as exc:
                                 rotation_invalid += 1
