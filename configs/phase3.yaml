@@ -2,6 +2,7 @@ phase3:
   elbow:
     # Human-facing channel numbers are 1-based: CH2 == SleeveFrame.channels[1].
     sleeve_channel: 2
+    elbow_flexion_limit_deg: 15 # 大于该值时，大臂旋转失效
 
     # Must be filled from tools/calibrate_sleeve_elbow.py before real Sleeve use.
     input_min: 1
@@ -25,3 +26,4 @@ phase3:
   sensor_timeout_ms: 200
   hard_timeout_ms: 1000
   control_hz: 100
+  
