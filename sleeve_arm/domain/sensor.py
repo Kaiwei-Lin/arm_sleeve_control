@@ -16,6 +16,7 @@ class SleeveFrame:
     timestamp: float
     channels: tuple[float, ...]
     sequence_id: int | None = None
+    host_timestamp_ns: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timestamp", _finite("timestamp", self.timestamp))
@@ -25,6 +26,14 @@ class SleeveFrame:
         object.__setattr__(self, "channels", channels)
         if self.sequence_id is not None:
             object.__setattr__(self, "sequence_id", int(self.sequence_id))
+        host_timestamp_ns = (
+            round(self.timestamp * 1_000_000_000)
+            if self.host_timestamp_ns is None
+            else int(self.host_timestamp_ns)
+        )
+        if host_timestamp_ns < 0:
+            raise ValueError("host_timestamp_ns must be non-negative")
+        object.__setattr__(self, "host_timestamp_ns", host_timestamp_ns)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +51,7 @@ class ImuFrame:
     quat_z: float | None = None
     sequence_id: int | None = None
     device_timestamp_us: int | None = None
+    host_timestamp_ns: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("timestamp", "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"):
@@ -56,6 +66,14 @@ class ImuFrame:
             object.__setattr__(self, "sequence_id", int(self.sequence_id))
         if self.device_timestamp_us is not None:
             object.__setattr__(self, "device_timestamp_us", int(self.device_timestamp_us))
+        host_timestamp_ns = (
+            round(self.timestamp * 1_000_000_000)
+            if self.host_timestamp_ns is None
+            else int(self.host_timestamp_ns)
+        )
+        if host_timestamp_ns < 0:
+            raise ValueError("host_timestamp_ns must be non-negative")
+        object.__setattr__(self, "host_timestamp_ns", host_timestamp_ns)
 
 
 @dataclass(frozen=True, slots=True)

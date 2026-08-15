@@ -10,15 +10,25 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from sleeve_arm.config import FlexModelConfig, load_phase3_config, load_phase4_config, load_robot_config
+from sleeve_arm.config import (
+    FlexModelConfig,
+    load_phase3_config,
+    load_phase4_config,
+    load_robot_config,
+    load_sensor_config,
+)
 from sleeve_arm.control import ArmMapper, SafeArmController
-from sleeve_arm.domain import ArmAction, MotionIntent, SensorSample, SleeveFrame
+from sleeve_arm.domain import ArmAction, ImuFrame, MotionIntent, SensorSample, SleeveFrame
 from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBasedPredictor
 from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibration_samples
 from sleeve_arm.robot import FakeRobotArm
 from tools.debug_model_mapping import manual_intent
 from tools import run_manual_model_control, run_model_control
-from tools.run_model_control import prepare_flexarm_predictor
+from tools.run_model_control import (
+    DualImuShoulderPredictor,
+    calibrate_dual_imu_estimator,
+    prepare_flexarm_predictor,
+)
 from tools.test_flex_model import replay
 
 
@@ -78,6 +88,12 @@ def test_phase4_rejects_non_positive_calibration_duration(tmp_path: Path) -> Non
     config = write_phase4_config(tmp_path, calibration_seconds="0")
     with pytest.raises(ValueError, match="calibration_seconds must be positive"):
         load_phase4_config(config)
+
+
+def test_default_phase4_uses_dual_imu_without_flex_model_artifacts() -> None:
+    loaded = load_phase4_config()
+    assert loaded.predictor_backend == "dual_imu"
+    assert loaded.flex_model is None
 
 
 def test_motion_intent_preserves_flexarm_diagnostics() -> None:
@@ -409,7 +425,126 @@ def test_manual_runtime_accepts_absolute_upper_arm_rotation(monkeypatch, capsys)
 def test_robot_connect_precedes_sensor_and_external_model_initialization() -> None:
     runtime = inspect.getsource(run_model_control.main)
     assert runtime.index("controller.connect()") < runtime.index("source.start()")
-    assert runtime.index("controller.connect()") < runtime.index("prepare_flexarm_predictor(")
+    assert runtime.index("controller.connect()") < runtime.index("prepare_dual_imu_estimator(")
+    assert "prepare_flexarm_predictor(" not in runtime
+
+
+def imu_frame(timestamp: float, quaternion: tuple[float, float, float, float]) -> ImuFrame:
+    return ImuFrame(
+        timestamp=timestamp,
+        accel_x=0.0,
+        accel_y=0.0,
+        accel_z=9.81,
+        gyro_x=0.0,
+        gyro_y=0.0,
+        gyro_z=0.0,
+        quat_w=quaternion[0],
+        quat_x=quaternion[1],
+        quat_y=quaternion[2],
+        quat_z=quaternion[3],
+    )
+
+
+class RecordingDualImuEstimator:
+    def __init__(self, results: list[SimpleNamespace] | None = None) -> None:
+        self.results = iter(results or [])
+        self.calibration_calls: list[tuple[list[tuple[float, ...]], list[tuple[float, ...]]]] = []
+        self.update_calls: list[tuple[tuple[float, ...], tuple[float, ...]]] = []
+
+    def calibrate(self, chest_rest_samples, arm_rest_samples):
+        self.calibration_calls.append((list(chest_rest_samples), list(arm_rest_samples)))
+        return SimpleNamespace(sample_count=len(chest_rest_samples))
+
+    def update(self, chest_q, arm_q):
+        self.update_calls.append((tuple(chest_q), tuple(arm_q)))
+        return next(self.results)
+
+
+def dual_imu_sample(
+    timestamp: float,
+    chest_q: tuple[float, float, float, float],
+    arm_q: tuple[float, float, float, float],
+) -> SensorSample:
+    return SensorSample(
+        timestamp,
+        SleeveFrame(timestamp, (10.0, 20.0, 30.0, 40.0, 50.0)),
+        imu1=imu_frame(timestamp, arm_q),
+        imu2=imu_frame(timestamp, chest_q),
+    )
+
+
+def test_dual_imu_calibration_passes_chest_then_arm_wxyz_samples() -> None:
+    chest = ((1.0, 0.0, 0.0, 0.0), (0.999, 0.001, 0.0, 0.0))
+    arm = ((0.98, 0.2, 0.0, 0.0), (0.97, 0.24, 0.0, 0.0))
+    pairs = [
+        (imu_frame(float(index), arm_q), imu_frame(float(index), chest_q))
+        for index, (chest_q, arm_q) in enumerate(zip(chest, arm), start=1)
+    ]
+    estimator = RecordingDualImuEstimator()
+
+    calibration = calibrate_dual_imu_estimator(estimator, pairs)
+
+    assert calibration.sample_count == 2
+    assert estimator.calibration_calls == [(list(chest), list(arm))]
+
+
+@pytest.mark.parametrize(
+    ("direction", "magnitude", "action", "flexion", "abduction"),
+    (
+        ("Forward", 30.0, ArmAction.FORWARD, math.radians(30.0), 0.0),
+        ("Backward", 20.0, ArmAction.BACKWARD, math.radians(-20.0), 0.0),
+        ("Lateral", 45.0, ArmAction.LATERAL, 0.0, math.radians(45.0)),
+        ("Rest", 4.0, None, 0.0, 0.0),
+    ),
+)
+def test_dual_imu_update_uses_chest_arm_order_and_maps_direction_magnitude(
+    direction: str,
+    magnitude: float,
+    action: ArmAction | None,
+    flexion: float,
+    abduction: float,
+) -> None:
+    chest_q = (1.0, 0.0, 0.0, 0.0)
+    arm_q = (0.9238795, 0.3826834, 0.0, 0.0)
+    estimator = RecordingDualImuEstimator([
+        SimpleNamespace(direction=direction, magnitude_deg=magnitude, confidence=0.8)
+    ])
+    predictor = DualImuShoulderPredictor(
+        estimator,
+        load_sensor_config().upper_arm_rotation,
+        max_age_s=None,
+    )
+
+    intent = predictor.predict(dual_imu_sample(1.0, chest_q, arm_q))
+
+    assert estimator.update_calls == [(chest_q, arm_q)]
+    assert intent.action is action
+    assert intent.model_action == direction
+    assert intent.angle_deg == pytest.approx(magnitude)
+    assert intent.confidence == pytest.approx(0.8)
+    assert intent.shoulder_flexion_rad == pytest.approx(flexion)
+    assert intent.shoulder_abduction_rad == pytest.approx(abduction)
+
+
+def test_dual_imu_transition_holds_last_unambiguous_shoulder_target() -> None:
+    estimator = RecordingDualImuEstimator([
+        SimpleNamespace(direction="Lateral", magnitude_deg=30.0, confidence=0.9),
+        SimpleNamespace(direction="Transition", magnitude_deg=35.0, confidence=0.4),
+    ])
+    predictor = DualImuShoulderPredictor(
+        estimator,
+        load_sensor_config().upper_arm_rotation,
+        max_age_s=None,
+    )
+    neutral = (1.0, 0.0, 0.0, 0.0)
+
+    active = predictor.predict(dual_imu_sample(1.0, neutral, neutral))
+    transition = predictor.predict(dual_imu_sample(2.0, neutral, neutral))
+
+    assert transition.model_action == "Transition"
+    assert transition.angle_deg == pytest.approx(35.0)
+    assert transition.shoulder_flexion_rad == active.shoulder_flexion_rad
+    assert transition.shoulder_abduction_rad == active.shoulder_abduction_rad
 
 
 def test_model_instance_is_reused_across_predictions() -> None:

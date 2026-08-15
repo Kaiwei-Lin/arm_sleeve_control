@@ -1,22 +1,6 @@
 predictor:
-  backend: flexarm_estimator
-
-  # FlexArmEstimator artifacts are external to this control repository.
-  model_dir: /home/user/sleeve_arm_control/flexarm_estimator/models
-
-  # Human-facing 1-based fields used by the trained model.
-  sleeve_channels: [3, 4, 5]
-
-  # Generated after the garment is put on; reuse requires an explicit CLI flag.
-  calibration_file: ../calibrations/flexarm_live_calibration.json
-  calibration_seconds: 3.0
-
-  angle:
-    min_deg: 0
-    # Conservative adapter validation bound; model-specific ranges remain in metadata.json.
-    max_deg: 180
+  backend: dual_imu
 
 phase4_validation:
-  # Shoulder regression is an absolute human semantic angle. Real execution
-  # therefore requires calibrated shoulder zero/min/max in configs/robot.yaml.
+  # Direction/magnitude are converted to absolute shoulder semantic angles.
   max_consecutive_prediction_errors: 3

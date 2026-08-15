@@ -21,6 +21,11 @@ class SleeveSource(ABC):
     @abstractmethod
     def latest(self) -> SleeveFrame | None: ...
 
+    @abstractmethod
+    def drain(self) -> tuple[SleeveFrame, ...]:
+        """Return every frame received since the previous drain/latest call."""
+        ...
+
     @property
     @abstractmethod
     def stats(self) -> SourceStats: ...
@@ -35,6 +40,11 @@ class ImuSource(ABC):
 
     @abstractmethod
     def latest(self) -> ImuFrame | None: ...
+
+    @abstractmethod
+    def drain(self) -> tuple[ImuFrame, ...]:
+        """Return every frame received since the previous drain/latest call."""
+        ...
 
     @property
     @abstractmethod

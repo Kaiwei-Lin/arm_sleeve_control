@@ -57,9 +57,10 @@ class MotionIntent:
             "Backward",
             "Lateral",
             "Rest",
+            "Transition",
             "Unknown",
         ):
-            raise ValueError("model_action must be a supported FlexArm action or null")
+            raise ValueError("model_action must be a supported shoulder action or null")
         if self.moving is not None and type(self.moving) is not bool:
             raise ValueError("moving must be a boolean or null")
         if self.action_probabilities is not None:

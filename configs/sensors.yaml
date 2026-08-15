@@ -33,8 +33,10 @@ upper_arm_rotation:
   # Parser order is [w,x,y,z]; interpreted as Sensor->World per the reference demo.
   twist_axis: x
   ema_alpha: 0.35
-  # null: use the latest frame from each IMU without timestamp alignment.
+  # null: shoulder control falls back to synchronization.max_time_delta_ms.
+  # A positive value overrides that threshold for shoulder and twist estimation.
   max_sync_ms: null
+  # Shared neutral-pose timing for shoulder and optional twist calibration.
   calibration_seconds: 2.0
   startup_timeout_s: 10.0
 

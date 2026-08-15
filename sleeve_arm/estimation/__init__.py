@@ -4,10 +4,14 @@ from sleeve_arm.estimation.upper_arm_rotation import (
     TwistResult,
     UpperArmRotationEstimator,
     UpperArmRotationResult,
+    align_quaternion_sign,
     average_quaternions,
     normalize_quaternion,
+    quaternion_from_axis_angle,
     quaternion_inverse,
     quaternion_multiply,
+    quaternion_rotate_vector,
+    quaternion_slerp,
 )
 
 __all__ = [
@@ -16,8 +20,12 @@ __all__ = [
     "TwistResult",
     "UpperArmRotationEstimator",
     "UpperArmRotationResult",
+    "align_quaternion_sign",
     "average_quaternions",
     "normalize_quaternion",
+    "quaternion_from_axis_angle",
     "quaternion_inverse",
     "quaternion_multiply",
+    "quaternion_rotate_vector",
+    "quaternion_slerp",
 ]

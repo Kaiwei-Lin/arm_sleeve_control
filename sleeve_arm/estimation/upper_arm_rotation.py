@@ -35,17 +35,72 @@ def quaternion_multiply(left: Sequence[float], right: Sequence[float]) -> np.nda
     ))
 
 
+def align_quaternion_sign(
+    quaternion: Sequence[float],
+    reference: Sequence[float],
+) -> np.ndarray:
+    current = normalize_quaternion(quaternion)
+    return -current if float(np.dot(current, normalize_quaternion(reference))) < 0.0 else current
+
+
 def average_quaternions(quaternions: Sequence[Sequence[float]]) -> np.ndarray:
+    """Markley average for WXYZ unit quaternions with deterministic sign."""
     if not quaternions:
         raise ValueError("at least one quaternion is required")
     reference = normalize_quaternion(quaternions[0])
-    aligned: list[np.ndarray] = []
+    accumulator = np.zeros((4, 4), dtype=float)
     for quaternion in quaternions:
-        current = normalize_quaternion(quaternion)
-        if float(np.dot(current, reference)) < 0.0:
-            current = -current
-        aligned.append(current)
-    return normalize_quaternion(np.mean(aligned, axis=0))
+        current = align_quaternion_sign(quaternion, reference)
+        accumulator += np.outer(current, current)
+    _, eigenvectors = np.linalg.eigh(accumulator)
+    return align_quaternion_sign(eigenvectors[:, -1], reference)
+
+
+def quaternion_slerp(
+    start: Sequence[float],
+    end: Sequence[float],
+    fraction: float,
+) -> np.ndarray:
+    fraction = float(fraction)
+    if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+        raise ValueError("SLERP fraction must be finite and in [0, 1]")
+    q0 = normalize_quaternion(start)
+    q1 = align_quaternion_sign(end, q0)
+    dot = float(np.clip(np.dot(q0, q1), -1.0, 1.0))
+    if dot > 0.9995:
+        return normalize_quaternion(q0 + fraction * (q1 - q0))
+    angle = math.acos(dot)
+    scale = math.sin(angle)
+    return normalize_quaternion(
+        math.sin((1.0 - fraction) * angle) / scale * q0
+        + math.sin(fraction * angle) / scale * q1
+    )
+
+
+def quaternion_rotate_vector(
+    quaternion: Sequence[float],
+    vector: Sequence[float],
+) -> np.ndarray:
+    q = normalize_quaternion(quaternion)
+    values = np.asarray(vector, dtype=float)
+    if values.shape != (3,) or not np.all(np.isfinite(values)):
+        raise ValueError("vector must contain three finite values")
+    q_vector = q[1:]
+    return values + 2.0 * np.cross(q_vector, np.cross(q_vector, values) + q[0] * values)
+
+
+def quaternion_from_axis_angle(axis: Sequence[float], angle_rad: float) -> np.ndarray:
+    values = np.asarray(axis, dtype=float)
+    angle_rad = float(angle_rad)
+    if values.shape != (3,) or not np.all(np.isfinite(values)):
+        raise ValueError("axis must contain three finite values")
+    if not math.isfinite(angle_rad):
+        raise ValueError("angle_rad must be finite")
+    norm = float(np.linalg.norm(values))
+    if norm <= 1e-12:
+        raise ValueError("axis norm must be nonzero")
+    half = angle_rad / 2.0
+    return normalize_quaternion((math.cos(half), *(math.sin(half) * values / norm)))
 
 
 def _axis_twist_degrees(quaternion: Sequence[float], axis: str) -> float:

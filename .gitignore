@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 recordings/
+data/
 calibrations/*.json
 .worktrees/
 flexarm_estimator/
