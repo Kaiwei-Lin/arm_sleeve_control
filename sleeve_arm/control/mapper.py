@@ -30,6 +30,8 @@ class ArmMapper:
         upper_arm_rotation = self._shoulder_target(
             "upper_arm_rotation", intent.upper_arm_rotation_rad
         )
+        if elbow > math.radians(self.config.elbow_flexion_limit_deg):
+            upper_arm_rotation = 0
         return {
             "shoulder_flexion": shoulder_flexion,
             "shoulder_abduction": shoulder_abduction,

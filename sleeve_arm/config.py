@@ -120,6 +120,7 @@ class Phase3ElbowConfig:
     angle_min_deg: float | None
     angle_max_deg: float | None
     invert_output: bool
+    elbow_flexion_limit_deg: float
 
 
 @dataclass(frozen=True)
@@ -369,6 +370,7 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
             angle_min_deg=_optional_float(range_raw, "min_deg"),
             angle_max_deg=_optional_float(range_raw, "max_deg"),
             invert_output=bool(elbow.get("invert_output", False)),
+            elbow_flexion_limit_deg=float(elbow.get("elbow_flexion_limit_deg", 15.0))
         ),
         sensor_timeout_ms=float(phase3["sensor_timeout_ms"]),
         hard_timeout_ms=float(phase3["hard_timeout_ms"]),

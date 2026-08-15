@@ -21,7 +21,7 @@ The executable depends only on Python, NumPy, and pyserial. It will not import `
 The primary command is:
 
 ```text
-python tools/demo_upper_arm_twist_imu770.py --upper-port COM5 --forearm-port COM6 --csv upper_arm_twist_test.csv
+python tools/demo_upper_arm_twist_imu770.py --upper-port COM21 --forearm-port COM23 --csv upper_arm_twist_test.csv
 ```
 
 Both devices default to 460800 baud, eight data bits, no parity, one stop bit, and a finite read timeout. Options allow the user to adjust the baud rate, timeout, calibration duration, console refresh rate, maximum synchronization gap, EMA coefficient, and CSV path. The quaternion order and direction are fixed to the confirmed IMU770 semantics rather than exposed as unnecessary runtime choices.
