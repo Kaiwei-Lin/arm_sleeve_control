@@ -55,6 +55,31 @@ class SensorSynchronizer:
     def buffer_sizes(self) -> tuple[int, int]:
         return len(self._imu1), len(self._imu2)
 
+    def latest_imu_pair(
+        self,
+        max_delta_ms: float | None = None,
+    ) -> tuple[ImuFrame, ImuFrame] | None:
+        """Return the newest mutually synchronized pair, independent of Sleeve timing."""
+        if not self.imu1_enabled or not self.imu2_enabled or not self._imu1 or not self._imu2:
+            return None
+        if max_delta_ms is None:
+            return self._imu1[-1], self._imu2[-1]
+        max_delta_s = max_delta_ms / 1000.0
+        if max_delta_s < 0:
+            raise ValueError("max_delta_ms must be non-negative")
+        left = len(self._imu1) - 1
+        right = len(self._imu2) - 1
+        while left >= 0 and right >= 0:
+            imu1, imu2 = self._imu1[left], self._imu2[right]
+            gap = imu1.timestamp - imu2.timestamp
+            if abs(gap) <= max_delta_s:
+                return imu1, imu2
+            if gap > 0:
+                left -= 1
+            else:
+                right -= 1
+        return None
+
     def _append(self, buffer: deque[ImuFrame], frame: ImuFrame) -> None:
         if buffer and frame.timestamp < buffer[-1].timestamp:
             raise ValueError("IMU frames must be appended in timestamp order")

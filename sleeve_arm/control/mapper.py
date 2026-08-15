@@ -27,13 +27,14 @@ class ArmMapper:
         elbow = intent.elbow_flexion
         shoulder_flexion = self._shoulder_target("shoulder_flexion", intent.shoulder_flexion_rad)
         shoulder_abduction = self._shoulder_target("shoulder_abduction", intent.shoulder_abduction_rad)
+        upper_arm_rotation = self._shoulder_target(
+            "upper_arm_rotation", intent.upper_arm_rotation_rad
+        )
         return {
             "shoulder_flexion": shoulder_flexion,
             "shoulder_abduction": shoulder_abduction,
             "elbow_flexion": elbow,
-            # Phase 4 has no intent for this DOF yet. Keep it at the measured
-            # startup position; future IMU control belongs above the mapper.
-            "upper_arm_rotation": self.startup_positions["upper_arm_rotation"],
+            "upper_arm_rotation": upper_arm_rotation,
         }
 
     def _shoulder_target(self, name: str, semantic_angle: float | None) -> float:

@@ -4,7 +4,7 @@ sensors:
   sleeve:
     enabled: true
     backend: serial_ascii
-    port: /dev/ttyUSB3
+    port: /dev/ttyUSB1
     baudrate: 115200
     timeout_s: 1.0
     delimiter: ";"
@@ -13,16 +13,30 @@ sensors:
   imu1:
     enabled: true
     backend: imu770_serial
-    port: COM11
+    port: /dev/ttyCH9344USB0
     baudrate: 460800
     timeout_s: 0.1
 
   imu2:
-    enabled: false
+    enabled: true
     backend: imu770_serial
-    port: COM14
+    port: /dev/ttyCH9344USB3
     baudrate: 460800
     timeout_s: 0.1
+
+# Optional dual-IMU upper-arm rotation. Enable only after both IMU endpoints
+# and the calibrated ID24 robot limits are ready.
+upper_arm_rotation:
+  enabled: true
+  upper_imu: imu1
+  reference_imu: imu2
+  # Parser order is [w,x,y,z]; interpreted as Sensor->World per the reference demo.
+  twist_axis: x
+  ema_alpha: 0.35
+  # null: use the latest frame from each IMU without timestamp alignment.
+  max_sync_ms: null
+  calibration_seconds: 2.0
+  startup_timeout_s: 10.0
 
 # Software defaults for initial synchronization tests, not validated experiment parameters.
 synchronization:
