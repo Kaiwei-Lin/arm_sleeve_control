@@ -395,7 +395,7 @@ def test_mapper_uses_absolute_shoulder_angles_not_startup_offsets() -> None:
     mapper = ArmMapper(load_phase3_config().elbow, startup)
     targets = mapper.map(MotionIntent(
         timestamp=1.0,
-        elbow_flexion=0.5,
+        elbow_flexion=0.1,
         shoulder_flexion_rad=0.4,
         shoulder_abduction_rad=0.2,
     ))
@@ -416,7 +416,7 @@ def test_manual_runtime_accepts_absolute_upper_arm_rotation(monkeypatch, capsys)
         "run_manual_model_control.py",
         "--action", "Forward",
         "--shoulder-angle-deg", "5",
-        "--elbow-angle-deg", "30",
+        "--elbow-angle-deg", "10",
         "--upper-arm-rotation-deg", "10",
     ])
 

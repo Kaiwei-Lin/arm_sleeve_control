@@ -67,7 +67,7 @@ def test_missing_channel_is_rejected() -> None:
         SleeveFrame(1.0, (0.0, math.inf))
 
 
-def test_mapper_holds_shoulders_and_passes_absolute_elbow_angle() -> None:
+def test_mapper_holds_shoulders_maps_elbow_and_disables_rotation() -> None:
     startup = {
         "shoulder_flexion": 0.2,
         "shoulder_abduction": -0.3,
@@ -83,7 +83,7 @@ def test_mapper_holds_shoulders_and_passes_absolute_elbow_angle() -> None:
     assert high["elbow_flexion"] == pytest.approx(1.0)
     assert high["shoulder_flexion"] == startup["shoulder_flexion"]
     assert high["shoulder_abduction"] == startup["shoulder_abduction"]
-    assert high["upper_arm_rotation"] == startup["upper_arm_rotation"]
+    assert high["upper_arm_rotation"] == 0.0
 
 
 def test_watchdog_fresh_stale_hard_and_invalid_timestamp() -> None:

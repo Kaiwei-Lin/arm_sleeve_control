@@ -36,7 +36,7 @@ joints:
     direction: 1
     direction_status: NEEDS_HARDWARE_VALIDATION
     zero_position: 0
-    min_position: -0.087266
+    min_position: -0.1
     max_position: 3.14
     max_velocity: null
     max_current: null

@@ -16,8 +16,14 @@ from sleeve_arm.domain import ArmAction, JOINT_NAMES, MotionIntent
 from sleeve_arm.robot.dymotor import semantic_to_sdk_position
 
 
-def manual_intent(action: ArmAction, shoulder_angle_deg: float, elbow_angle_deg: float) -> MotionIntent:
+def manual_intent(
+    action: ArmAction,
+    shoulder_angle_deg: float,
+    elbow_angle_deg: float,
+    upper_arm_rotation_deg: float | None = None,
+) -> MotionIntent:
     shoulder = math.radians(shoulder_angle_deg)
+    upper_arm_rotation_rad = math.radians(upper_arm_rotation_deg) if upper_arm_rotation_deg is not None else None
     flexion = shoulder if action is ArmAction.FORWARD else -shoulder if action is ArmAction.BACKWARD else 0.0
     abduction = shoulder if action is ArmAction.LATERAL else 0.0
     return MotionIntent(
@@ -27,6 +33,7 @@ def manual_intent(action: ArmAction, shoulder_angle_deg: float, elbow_angle_deg:
         shoulder_abduction_rad=abduction,
         action=action,
         angle_deg=shoulder_angle_deg,
+        upper_arm_rotation_rad=upper_arm_rotation_rad,
     )
 
 
@@ -63,6 +70,7 @@ def main() -> int:
         "shoulder_flexion": math.radians(args.current_shoulder_flexion_deg),
         "shoulder_abduction": math.radians(args.current_shoulder_abduction_deg),
         "elbow_flexion": math.radians(args.current_elbow_deg),
+        "upper_arm_rotation": 0.0,
     }
     action = ArmAction[(args.action.upper())]
     intent = manual_intent(action, args.shoulder_angle_deg, args.elbow_angle_deg)
@@ -89,7 +97,7 @@ def main() -> int:
         print(f"  SDK request:      {sdk: .6f} rad")
         print(f"  semantic limits:  [{joint.min_position!r}, {joint.max_position!r}] rad")
     print(f"\nSDK batch positions (joint order): {sdk_requests}")
-    print("SDK batch mask: 0x7 (all three joints)")
+    print("SDK batch mask: 0xF (all four joints)")
     return 0
 
 
