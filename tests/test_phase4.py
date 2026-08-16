@@ -9,8 +9,10 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import yaml
 
 from sleeve_arm.config import (
+    DEFAULT_SENSOR_CONFIG_PATH,
     FlexModelConfig,
     load_phase3_config,
     load_phase4_config,
@@ -92,10 +94,11 @@ def test_phase4_rejects_non_positive_calibration_duration(tmp_path: Path) -> Non
         load_phase4_config(config)
 
 
-def test_default_phase4_uses_dual_imu_without_flex_model_artifacts() -> None:
+def test_default_phase4_keeps_both_shoulder_predictor_configs() -> None:
     loaded = load_phase4_config()
     assert loaded.predictor_backend == "dual_imu"
-    assert loaded.flex_model is None
+    assert loaded.flex_model is not None
+    assert loaded.flex_model.sleeve_channels == (3, 4, 5)
 
 
 def test_motion_intent_preserves_flexarm_diagnostics() -> None:
@@ -428,7 +431,119 @@ def test_robot_connect_precedes_sensor_and_external_model_initialization() -> No
     runtime = inspect.getsource(run_model_control.main)
     assert runtime.index("controller.connect()") < runtime.index("source.start()")
     assert runtime.index("controller.connect()") < runtime.index("prepare_dual_imu_estimator(")
-    assert "prepare_flexarm_predictor(" not in runtime
+    assert runtime.index("controller.connect()") < runtime.index("prepare_flexarm_predictor(")
+    assert "args.shoulder_predictor or phase4.predictor_backend" in runtime
+
+
+def test_run_model_control_selects_three_flex_predictor_without_shoulder_imus(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    phase4_config = tmp_path / "phase4.yaml"
+    phase4_config.write_text(
+        f"""
+predictor:
+  backend: dual_imu
+  flexarm_estimator:
+    model_dir: {model_dir.as_posix()}
+    sleeve_channels: [3, 4, 5]
+    calibration_file: runtime/calibration.json
+    calibration_seconds: 0.08
+    angle: {{min_deg: 0, max_deg: 180}}
+phase4_validation:
+  max_consecutive_prediction_errors: 3
+""",
+        encoding="utf-8",
+    )
+    sensor_raw = yaml.safe_load(DEFAULT_SENSOR_CONFIG_PATH.read_text(encoding="utf-8"))
+    sensor_raw["upper_arm_rotation"]["enabled"] = False
+    sensor_raw["sensors"]["imu1"]["enabled"] = False
+    sensor_raw["sensors"]["imu2"]["enabled"] = False
+    sensor_config = tmp_path / "sensors.yaml"
+    sensor_config.write_text(
+        yaml.safe_dump(sensor_raw, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    class Calibration:
+        baseline = (0.0, 0.0, 0.0)
+        scale = (1.0, 1.0, 1.0)
+
+        def __init__(self, sample_count: int) -> None:
+            self.sample_count = sample_count
+
+        def save(self, path: Path) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
+
+    class RuntimeFlexArmEstimator:
+        instances: list["RuntimeFlexArmEstimator"] = []
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.instances.append(self)
+
+        @classmethod
+        def from_pretrained(cls, path: Path) -> "RuntimeFlexArmEstimator":
+            assert path == model_dir.resolve()
+            return cls()
+
+        def calibrate(self, rows: np.ndarray) -> Calibration:
+            return Calibration(len(rows))
+
+        def reset(self) -> None:
+            pass
+
+        def update(self, **kwargs) -> SimpleNamespace:
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                action="Rest",
+                angle_deg=0.0,
+                action_confidence=1.0,
+                angle_confidence=1.0,
+                moving=False,
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "flexarm",
+        SimpleNamespace(FlexArmEstimator=RuntimeFlexArmEstimator),
+    )
+    monkeypatch.setattr("builtins.input", lambda _: "")
+    monkeypatch.setattr(sys, "argv", [
+        "run_model_control.py",
+        "--shoulder-predictor", "flexarm_estimator",
+        "--sleeve", "fake",
+        "--imus", "fake",
+        "--robot", "fake",
+        "--duration", "0.08",
+        "--calibration-seconds", "0.08",
+        "--phase4-config", str(phase4_config),
+        "--sensor-config", str(sensor_config),
+    ])
+
+    assert run_model_control.main() == 0
+    assert len(RuntimeFlexArmEstimator.instances) == 1
+    calls = RuntimeFlexArmEstimator.instances[0].calls
+    assert calls
+    assert all(set(call) == {"flex1", "flex2", "flex3", "timestamp_ns"} for call in calls)
+    assert "shoulder_predictor=flexarm_estimator" in capsys.readouterr().out
+
+    monkeypatch.setattr(sys, "argv", [
+        "run_model_control.py",
+        "--shoulder-predictor", "dual_imu",
+        "--sleeve", "fake",
+        "--imus", "fake",
+        "--robot", "fake",
+        "--duration", "0.08",
+        "--phase4-config", str(phase4_config),
+        "--sensor-config", str(sensor_config),
+    ])
+    assert run_model_control.main() == 1
+    assert "sensors.imu1.enabled=true" in capsys.readouterr().err
 
 
 def test_dual_imu_predictor_lives_in_reusable_predictor_package() -> None:

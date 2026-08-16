@@ -329,8 +329,8 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
         raise ValueError("shoulder_imu roles must be imu1, imu2, imu3, or imu4")
     if shoulder.arm_imu == shoulder.chest_imu:
         raise ValueError("shoulder arm_imu and chest_imu must be different")
-    if not endpoints[shoulder.arm_imu].enabled or not endpoints[shoulder.chest_imu].enabled:
-        raise ValueError("shoulder_imu requires both arm_imu and chest_imu to be enabled")
+    # Whether this pair must be enabled depends on the selected shoulder
+    # predictor. Runtime consumers validate the sources they actually use.
     if shoulder.max_sync_ms is not None and (
         not math.isfinite(shoulder.max_sync_ms) or shoulder.max_sync_ms <= 0.0
     ):
@@ -478,29 +478,34 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
 
     backend = str(predictor.get("backend", ""))
     flex_model = None
-    if backend == "flexarm_estimator":
-        angle = predictor.get("angle")
+    flex_raw = predictor.get("flexarm_estimator")
+    if flex_raw is not None and not isinstance(flex_raw, dict):
+        raise ValueError("predictor.flexarm_estimator must be a mapping")
+    if flex_raw is None and backend == "flexarm_estimator":
+        flex_raw = predictor  # Backward-compatible flat FlexArmEstimator config.
+    if flex_raw is not None:
+        angle = flex_raw.get("angle")
         if not isinstance(angle, dict):
-            raise ValueError("flexarm_estimator requires a predictor.angle mapping")
-        channels_raw = predictor.get("sleeve_channels")
+            raise ValueError("flexarm_estimator requires an angle mapping")
+        channels_raw = flex_raw.get("sleeve_channels")
         if not isinstance(channels_raw, list) or tuple(int(value) for value in channels_raw) != (3, 4, 5):
             raise ValueError("FlexArmEstimator sleeve_channels must be exactly [3, 4, 5]")
-        model_dir_value = predictor.get("model_dir")
+        model_dir_value = flex_raw.get("model_dir")
         if not model_dir_value:
-            raise ValueError("predictor.model_dir is required for flexarm_estimator")
+            raise ValueError("model_dir is required for flexarm_estimator")
         model_dir = Path(str(model_dir_value)).expanduser()
         if not model_dir.is_absolute():
             model_dir = config_path.parent / model_dir
         model_dir = model_dir.resolve()
-        if not model_dir.is_dir():
+        if backend == "flexarm_estimator" and not model_dir.is_dir():
             raise ValueError(f"FlexArm model directory was not found: {model_dir}")
-        calibration_value = predictor.get("calibration_file")
+        calibration_value = flex_raw.get("calibration_file")
         if not calibration_value:
-            raise ValueError("predictor.calibration_file is required for flexarm_estimator")
+            raise ValueError("calibration_file is required for flexarm_estimator")
         calibration_file = Path(str(calibration_value)).expanduser()
         if not calibration_file.is_absolute():
             calibration_file = config_path.parent / calibration_file
-        calibration_seconds = float(predictor.get("calibration_seconds", 3.0))
+        calibration_seconds = float(flex_raw.get("calibration_seconds", 3.0))
         minimum = float(angle.get("min_deg", 0.0))
         maximum = float(angle.get("max_deg", 180.0))
         flex_model = FlexModelConfig(

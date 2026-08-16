@@ -23,7 +23,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--sensor-config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
     parser.add_argument("--phase4-config", type=Path, default=DEFAULT_PHASE4_CONFIG_PATH)
-    parser.add_argument("--output", type=Path, help="override predictor.calibration_file")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="override predictor.flexarm_estimator.calibration_file",
+    )
     parser.add_argument("--calibration-seconds", type=float)
     args = parser.parse_args(argv)
     if args.calibration_seconds is not None and args.calibration_seconds <= 0:
@@ -33,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         phase4 = load_phase4_config(args.phase4_config)
         if phase4.flex_model is None:
-            raise ValueError("calibration requires predictor.backend=flexarm_estimator")
+            raise ValueError("calibration requires predictor.flexarm_estimator configuration")
         source = create_sleeve_source(load_sensor_config(args.sensor_config))
         source.start()
         prepare_flexarm_predictor(

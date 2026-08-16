@@ -18,7 +18,6 @@ from sleeve_arm.config import (
     DEFAULT_SENSOR_CONFIG_PATH, load_phase3_config, load_phase4_config,
     load_robot_config, load_sensor_config, FlexModelConfig, SensorConfig,
 )
-from sleeve_arm.control import ArmMapper, SafeArmController, SensorWatchdog
 from sleeve_arm.domain import ImuFrame, SensorSample
 from sleeve_arm.estimation import UpperArmRotationEstimator, UpperArmRotationResult
 from sleeve_arm.predictor import (
@@ -29,7 +28,6 @@ from sleeve_arm.predictor import (
     imu_quaternion,
 )
 from sleeve_arm.predictor.calibration import collect_calibration_samples
-from sleeve_arm.robot import DyMotorArm, FakeRobotArm
 from sleeve_arm.sources import (
     FakeImuSource,
     FakeSleeveSource,
@@ -63,7 +61,7 @@ def prepare_flexarm_predictor(
     print_fn: Callable[[str], None] = print,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> FlexModelPredictor:
-    """Legacy helper retained for the standalone flex calibration/test tools."""
+    """Prepare the shared three-flex-sensor shoulder predictor."""
     prepared = FlexModelPredictor(config) if predictor is None else predictor
     output = config.calibration_file if calibration_output is None else calibration_output
     if reuse_calibration:
@@ -248,7 +246,10 @@ def prepare_dual_imu_estimator(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Dual-IMU shoulder + CH2 elbow control; real motion requires --execute.")
+    from sleeve_arm.control import ArmMapper, SafeArmController, SensorWatchdog
+    from sleeve_arm.robot import DyMotorArm, FakeRobotArm
+
+    parser = argparse.ArgumentParser(description="Selectable dual-IMU or three-flex shoulder control; real motion requires --execute.")
     parser.add_argument("--sleeve", choices=("fake", "real"), default="real")
     parser.add_argument("--imus", choices=("fake", "real"), default="real")
     parser.add_argument("--robot", choices=("fake", "dymotor"), default="dymotor")
@@ -258,14 +259,37 @@ def main() -> int:
     parser.add_argument("--sensor-config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
     parser.add_argument("--phase3-config", type=Path, default=DEFAULT_PHASE3_CONFIG_PATH)
     parser.add_argument("--phase4-config", type=Path, default=DEFAULT_PHASE4_CONFIG_PATH)
-    parser.add_argument("--calibration-seconds", type=float, help="override both dual-IMU calibration durations")
+    parser.add_argument(
+        "--shoulder-predictor",
+        choices=("dual_imu", "flexarm_estimator"),
+        help="override predictor.backend for shoulder estimation",
+    )
+    parser.add_argument(
+        "--reuse-calibration",
+        action="store_true",
+        help="flexarm_estimator only: reuse its configured calibration file",
+    )
+    parser.add_argument(
+        "--calibration-seconds",
+        type=float,
+        help="override selected shoulder and upper-arm-rotation calibration durations",
+    )
+    parser.add_argument(
+        "--calibration-output",
+        type=Path,
+        help="flexarm_estimator only: override its calibration output file",
+    )
     parser.add_argument("--library", type=Path)
     parser.add_argument(
         "--bridge-diagnostics",
         action="store_true",
         help="print raw C-side PVCT values during DyMotor reads",
     )
-    parser.add_argument("--imu-debug", action="store_true", help="include both quaternions in 1 Hz telemetry")
+    parser.add_argument(
+        "--imu-debug",
+        action="store_true",
+        help="include available IMU quaternions in 1 Hz telemetry",
+    )
     args = parser.parse_args()
     if args.duration is not None and args.duration <= 0:
         parser.error("--duration must be positive")
@@ -293,11 +317,30 @@ def main() -> int:
         rotation_config = sensor_config.upper_arm_rotation
         shoulder_names = (shoulder_config.arm_imu, shoulder_config.chest_imu)
         rotation_names = (rotation_config.upper_imu, rotation_config.reference_imu)
-        if phase4.predictor_backend != "dual_imu":
+        shoulder_backend = args.shoulder_predictor or phase4.predictor_backend
+        if shoulder_backend not in ("dual_imu", "flexarm_estimator"):
             raise ValueError(
-                "run_model_control requires predictor.backend=dual_imu; "
-                "use run_sleeve_elbow for rule_based"
+                "run_model_control shoulder predictor must be dual_imu or flexarm_estimator"
             )
+        if shoulder_backend == "flexarm_estimator":
+            if phase4.flex_model is None:
+                raise ValueError("phase4 config does not define predictor.flexarm_estimator")
+            if not phase4.flex_model.model_dir.is_dir():
+                raise ValueError(
+                    f"FlexArm model directory was not found: {phase4.flex_model.model_dir}"
+                )
+        elif args.reuse_calibration or args.calibration_output is not None:
+            raise ValueError(
+                "--reuse-calibration and --calibration-output require "
+                "the flexarm_estimator shoulder predictor"
+            )
+        required_imus = (
+            (shoulder_names if shoulder_backend == "dual_imu" else ())
+            + (rotation_names if rotation_config.enabled else ())
+        )
+        for name in required_imus:
+            if not getattr(sensor_config, name).enabled:
+                raise ValueError(f"model control requires sensors.{name}.enabled=true")
         elbow_config = phase3.elbow
         if args.sleeve == "fake" and elbow_config.input_min is None:
             elbow_config = replace(
@@ -339,12 +382,13 @@ def main() -> int:
             if args.sleeve == "fake"
             else create_sleeve_source(sensor_config)
         )
-        required_imus = shoulder_names + (rotation_names if rotation_config.enabled else ())
-        delayed_imus = {shoulder_names[1], rotation_names[1]}
+        delayed_imus = set()
+        if shoulder_backend == "dual_imu":
+            delayed_imus.add(shoulder_names[1])
+        if rotation_config.enabled:
+            delayed_imus.add(rotation_names[1])
         for name in required_imus:
             endpoint = getattr(sensor_config, name)
-            if not endpoint.enabled:
-                raise ValueError(f"model control requires sensors.{name}.enabled=true")
             created = (
                 FakeImuSource(timestamp_offset_s=(0.005 if name in delayed_imus else 0.0))
                 if args.imus == "fake"
@@ -356,16 +400,28 @@ def main() -> int:
         source.start()
         for imu_source in imu_sources.values():
             imu_source.start()
-        shoulder_estimator, _ = prepare_dual_imu_estimator(
-            imu_sources,
-            sensor_config,
-            phase3.sensor_timeout_ms / 1000.0,
-            calibration_seconds=args.calibration_seconds,
-        )
-        shoulder_predictor = DualImuShoulderPredictor(
-            shoulder_estimator,
-            phase3.sensor_timeout_ms / 1000.0,
-        )
+        if shoulder_backend == "dual_imu":
+            shoulder_estimator, _ = prepare_dual_imu_estimator(
+                imu_sources,
+                sensor_config,
+                phase3.sensor_timeout_ms / 1000.0,
+                calibration_seconds=args.calibration_seconds,
+            )
+            shoulder_predictor = DualImuShoulderPredictor(
+                shoulder_estimator,
+                phase3.sensor_timeout_ms / 1000.0,
+            )
+        else:
+            assert phase4.flex_model is not None
+            shoulder_predictor = prepare_flexarm_predictor(
+                source,
+                phase4.flex_model,
+                reuse_calibration=args.reuse_calibration,
+                calibration_seconds=args.calibration_seconds,
+                calibration_output=args.calibration_output,
+                input_fn=input,
+            )
+        print(f"shoulder_predictor={shoulder_backend}")
         elbow_predictor = RuleBasedPredictor(elbow_config)
 
         shoulder_max_sync_ms = (
@@ -398,18 +454,27 @@ def main() -> int:
             print(f"大臂旋转零位标定完成：samples={len(rotation_pairs)}")
             last_rotation_rad = 0.0
 
-        shoulder_sync = _pair_synchronizer(sensor_config)
+        shoulder_sync = (
+            _pair_synchronizer(sensor_config)
+            if shoulder_backend == "dual_imu"
+            else SensorSynchronizer(
+                sensor_config.synchronization.max_time_delta_ms,
+                sensor_config.synchronization.buffer_duration_ms,
+            )
+        )
         rotation_sync = _pair_synchronizer(sensor_config) if rotation_config.enabled else None
         readiness_deadline = time.monotonic() + phase3.hard_timeout_ms / 1000.0
         sample = intent = None
         while time.monotonic() < readiness_deadline:
-            _add_latest_pair(shoulder_sync, imu_sources, shoulder_names)
+            if shoulder_backend == "dual_imu":
+                _add_latest_pair(shoulder_sync, imu_sources, shoulder_names)
             if rotation_sync is not None:
                 _add_latest_pair(rotation_sync, imu_sources, rotation_names)
             frame = source.latest()
             if frame is not None:
                 sample = shoulder_sync.synchronize(frame)
-                sample = _attach_latest_pair(sample, shoulder_sync, shoulder_max_sync_ms)
+                if shoulder_backend == "dual_imu":
+                    sample = _attach_latest_pair(sample, shoulder_sync, shoulder_max_sync_ms)
                 try:
                     shoulder_intent = shoulder_predictor.predict(sample)
                     elbow_intent = elbow_predictor.predict(sample)
@@ -453,7 +518,8 @@ def main() -> int:
         while deadline is None or time.monotonic() < deadline:
             imu_source_error: Exception | None = None
             try:
-                _add_latest_pair(shoulder_sync, imu_sources, shoulder_names)
+                if shoulder_backend == "dual_imu":
+                    _add_latest_pair(shoulder_sync, imu_sources, shoulder_names)
                 if rotation_sync is not None:
                     _add_latest_pair(rotation_sync, imu_sources, rotation_names)
             except Exception as exc:
@@ -463,7 +529,8 @@ def main() -> int:
             cycles += 1
             if frame is not None:
                 sample = shoulder_sync.synchronize(frame)
-                sample = _attach_latest_pair(sample, shoulder_sync, shoulder_max_sync_ms)
+                if shoulder_backend == "dual_imu":
+                    sample = _attach_latest_pair(sample, shoulder_sync, shoulder_max_sync_ms)
                 age = watchdog.age(sample.timestamp, now)
                 if watchdog.is_hard_timeout(sample.timestamp, now):
                     raise RuntimeError(f"Sleeve hard timeout: {age * 1000:.1f} ms")
@@ -527,8 +594,9 @@ def main() -> int:
                     states = controller.read_joint_states()
                     positions = {name: value.position for name, value in states.items()}
                     tracking = {name: last_safe[name] - positions[name] for name in last_safe}
-                    shoulder_result = shoulder_predictor.last_result
-                    assert shoulder_result is not None
+                    assert intent.model_action is not None
+                    assert intent.angle_deg is not None
+                    assert intent.confidence is not None
                     rotation_telemetry = ""
                     if rotation_estimator is not None and rotation_result is not None:
                         rotation_telemetry = (
@@ -543,7 +611,11 @@ def main() -> int:
                             f" rotation_invalid={rotation_invalid}"
                         )
                     if args.imu_debug:
-                        shoulder_frames = shoulder_predictor.last_frames
+                        shoulder_frames = (
+                            shoulder_predictor.last_frames
+                            if isinstance(shoulder_predictor, DualImuShoulderPredictor)
+                            else None
+                        )
                         if shoulder_frames is not None:
                             arm, chest = shoulder_frames
                             rotation_telemetry += (
@@ -560,9 +632,9 @@ def main() -> int:
                         f"state={state.name} sleeve_fps={source.stats.estimated_fps:.1f} "
                         f"control_fps={cycles / max(now-started, 1e-9):.1f} "
                         f"model_fps={predictions / max(now-started, 1e-9):.1f} age_ms={age*1000:.1f} "
-                        f"direction={shoulder_result.direction} "
-                        f"magnitude_deg={shoulder_result.magnitude_deg:.2f} "
-                        f"confidence={shoulder_result.confidence:.3f} "
+                        f"predictor={shoulder_backend} direction={intent.model_action} "
+                        f"magnitude_deg={intent.angle_deg:.2f} "
+                        f"confidence={intent.confidence:.3f} "
                         f"inference_ms={intent.inference_ms:.3f} "
                         f"targets_rad={last_safe} positions_rad={positions} tracking_rad={tracking} "
                         f"invalid={invalid} stale={stale}{rotation_telemetry}"

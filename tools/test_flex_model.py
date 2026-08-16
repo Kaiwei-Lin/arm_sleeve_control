@@ -49,7 +49,7 @@ def replay(path: Path, predictor: FlexModelPredictor) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run FlexPredictor without connecting any robot.")
+    parser = argparse.ArgumentParser(description="Run FlexArmEstimator without connecting any robot.")
     parser.add_argument("--input", type=Path, help="Phase 2 samples.csv; skips serial Sleeve")
     parser.add_argument("--refresh", type=float, default=0.5)
     parser.add_argument("--sensor-config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
@@ -64,7 +64,9 @@ def main() -> int:
     try:
         config = load_phase4_config(args.phase4_config)
         if config.flex_model is None:
-            raise ValueError("test_flex_model requires predictor.backend=flexarm_estimator")
+            raise ValueError(
+                "test_flex_model requires predictor.flexarm_estimator configuration"
+            )
         if args.input is not None:
             if not args.reuse_calibration:
                 raise ValueError("offline replay requires --reuse-calibration")

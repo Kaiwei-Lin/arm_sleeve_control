@@ -50,7 +50,19 @@ class DualImuShoulderPredictor(MotionPredictor):
         self._last_targets: tuple[float | None, float | None] = (None, None)
 
     def predict(self, sample: SensorSample) -> MotionIntent:
-        arm, chest = self._frames(sample)
+        if sample.imu1 is None or sample.imu2 is None:
+            raise ValueError("dual-IMU shoulder estimation requires synchronized arm and chest frames")
+        return self.predict_imu_pair(sample.imu1, sample.imu2, timestamp=sample.timestamp)
+
+    def predict_imu_pair(
+        self,
+        arm: ImuFrame,
+        chest: ImuFrame,
+        *,
+        timestamp: float | None = None,
+    ) -> MotionIntent:
+        """Predict directly from the synchronized ``(arm, chest)`` frames."""
+        self._require_fresh((arm, chest))
         chest_q = imu_quaternion(chest)
         arm_q = imu_quaternion(arm)
         started = time.perf_counter()
@@ -82,7 +94,7 @@ class DualImuShoulderPredictor(MotionPredictor):
         self.last_result = result
         self.last_frames = (arm, chest)
         return MotionIntent(
-            timestamp=sample.timestamp,
+            timestamp=max(arm.timestamp, chest.timestamp) if timestamp is None else timestamp,
             shoulder_flexion_rad=targets[0],
             shoulder_abduction_rad=targets[1],
             action=action,
@@ -93,12 +105,8 @@ class DualImuShoulderPredictor(MotionPredictor):
             moving=direction != "Rest",
         )
 
-    def _frames(self, sample: SensorSample) -> tuple[ImuFrame, ImuFrame]:
-        if sample.imu1 is None or sample.imu2 is None:
-            raise ValueError("dual-IMU shoulder estimation requires synchronized arm and chest frames")
-        frames = (sample.imu1, sample.imu2)
+    def _require_fresh(self, frames: tuple[ImuFrame, ImuFrame]) -> None:
         if self.max_age_s is not None:
             now = time.monotonic()
             if any(abs(now - frame.timestamp) > self.max_age_s for frame in frames):
                 raise ValueError("dual-IMU shoulder pair is stale")
-        return frames

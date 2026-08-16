@@ -13,14 +13,14 @@ sensors:
   imu1:
     enabled: true
     backend: imu770_serial
-    port: /dev/ttyCH9344USB0
+    port: COM14
     baudrate: 460800
     timeout_s: 0.1
 
   imu2:
     enabled: true
     backend: imu770_serial
-    port: /dev/ttyCH9344USB3
+    port: COM11
     baudrate: 460800
     timeout_s: 0.1
 
@@ -28,14 +28,14 @@ sensors:
   imu3:
     enabled: true
     backend: imu770_serial
-    port: null
+    port: COM16
     baudrate: 460800
     timeout_s: 0.1
 
   imu4:
     enabled: true
     backend: imu770_serial
-    port: null
+    port: COM15
     baudrate: 460800
     timeout_s: 0.1
 

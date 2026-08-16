@@ -151,13 +151,16 @@ def test_shoulder_and_rotation_roles_cannot_overlap(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("name", ("imu1", "imu2"))
-def test_shoulder_requires_both_role_sources(tmp_path, name: str) -> None:
+def test_sensor_config_allows_disabled_shoulder_source_for_flex_predictor(
+    tmp_path,
+    name: str,
+) -> None:
     path = write_sensor_config(tmp_path, enabled=False, imu3_enabled=False, imu4_enabled=False)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     raw["sensors"][name]["enabled"] = False
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="shoulder_imu requires both"):
-        load_sensor_config(path)
+    config = load_sensor_config(path)
+    assert not getattr(config, name).enabled
 
 
 def test_dual_imu_rotation_reaches_fake_robot_through_mapper_and_safety() -> None:
