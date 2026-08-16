@@ -15,6 +15,7 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "robot.yaml"
 DEFAULT_SENSOR_CONFIG_PATH = PROJECT_ROOT / "configs" / "sensors.yaml"
 DEFAULT_PHASE3_CONFIG_PATH = PROJECT_ROOT / "configs" / "phase3.yaml"
 DEFAULT_PHASE4_CONFIG_PATH = PROJECT_ROOT / "configs" / "phase4.yaml"
+IMU_NAMES = ("imu1", "imu2", "imu3", "imu4")
 
 
 @dataclass(frozen=True)
@@ -94,10 +95,22 @@ class UpperArmRotationConfig:
 
 
 @dataclass(frozen=True)
+class ShoulderImuConfig:
+    arm_imu: str
+    chest_imu: str
+    max_sync_ms: float | None
+    calibration_seconds: float
+    startup_timeout_s: float
+
+
+@dataclass(frozen=True)
 class SensorConfig:
     sleeve: SensorEndpointConfig
     imu1: SensorEndpointConfig
     imu2: SensorEndpointConfig
+    imu3: SensorEndpointConfig
+    imu4: SensorEndpointConfig
+    shoulder_imu: ShoulderImuConfig
     upper_arm_rotation: UpperArmRotationConfig
     synchronization: SynchronizationConfig
     recording: RecordingConfig
@@ -255,11 +268,12 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
     sensors = raw.get("sensors")
     sync = raw.get("synchronization")
     recording = raw.get("recording")
+    shoulder_raw = raw.get("shoulder_imu", {})
     rotation_raw = raw.get("upper_arm_rotation", {})
     if not isinstance(sensors, dict) or not isinstance(sync, dict) or not isinstance(recording, dict):
         raise ValueError("sensor config requires sensors, synchronization, and recording mappings")
-    if not isinstance(rotation_raw, dict):
-        raise ValueError("upper_arm_rotation must be a mapping")
+    if not isinstance(shoulder_raw, dict) or not isinstance(rotation_raw, dict):
+        raise ValueError("shoulder_imu and upper_arm_rotation must be mappings")
 
     def endpoint(name: str) -> SensorEndpointConfig:
         item = sensors.get(name)
@@ -285,12 +299,22 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
         return result
 
     sleeve = endpoint("sleeve")
-    imu1 = endpoint("imu1")
-    imu2 = endpoint("imu2")
+    endpoints = {name: endpoint(name) for name in IMU_NAMES}
+    shoulder = ShoulderImuConfig(
+        arm_imu=str(shoulder_raw.get("arm_imu", "imu1")),
+        chest_imu=str(shoulder_raw.get("chest_imu", "imu2")),
+        max_sync_ms=(
+            None
+            if shoulder_raw.get("max_sync_ms") is None
+            else float(shoulder_raw["max_sync_ms"])
+        ),
+        calibration_seconds=float(shoulder_raw.get("calibration_seconds", 2.0)),
+        startup_timeout_s=float(shoulder_raw.get("startup_timeout_s", 10.0)),
+    )
     rotation = UpperArmRotationConfig(
         enabled=bool(rotation_raw.get("enabled", False)),
-        upper_imu=str(rotation_raw.get("upper_imu", "imu1")),
-        reference_imu=str(rotation_raw.get("reference_imu", "imu2")),
+        upper_imu=str(rotation_raw.get("upper_imu", "imu3")),
+        reference_imu=str(rotation_raw.get("reference_imu", "imu4")),
         twist_axis=str(rotation_raw.get("twist_axis", "x")).lower(),
         ema_alpha=float(rotation_raw.get("ema_alpha", 0.35)),
         max_sync_ms=(
@@ -301,8 +325,23 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
         calibration_seconds=float(rotation_raw.get("calibration_seconds", 2.0)),
         startup_timeout_s=float(rotation_raw.get("startup_timeout_s", 10.0)),
     )
-    if rotation.upper_imu not in ("imu1", "imu2") or rotation.reference_imu not in ("imu1", "imu2"):
-        raise ValueError("upper_arm_rotation IMU roles must be imu1 or imu2")
+    if shoulder.arm_imu not in IMU_NAMES or shoulder.chest_imu not in IMU_NAMES:
+        raise ValueError("shoulder_imu roles must be imu1, imu2, imu3, or imu4")
+    if shoulder.arm_imu == shoulder.chest_imu:
+        raise ValueError("shoulder arm_imu and chest_imu must be different")
+    if not endpoints[shoulder.arm_imu].enabled or not endpoints[shoulder.chest_imu].enabled:
+        raise ValueError("shoulder_imu requires both arm_imu and chest_imu to be enabled")
+    if shoulder.max_sync_ms is not None and (
+        not math.isfinite(shoulder.max_sync_ms) or shoulder.max_sync_ms <= 0.0
+    ):
+        raise ValueError("shoulder_imu.max_sync_ms must be positive or null")
+    if not all(math.isfinite(value) and value > 0.0 for value in (
+        shoulder.calibration_seconds,
+        shoulder.startup_timeout_s,
+    )):
+        raise ValueError("shoulder_imu timing values must be positive and finite")
+    if rotation.upper_imu not in IMU_NAMES or rotation.reference_imu not in IMU_NAMES:
+        raise ValueError("upper_arm_rotation IMU roles must be imu1, imu2, imu3, or imu4")
     if rotation.upper_imu == rotation.reference_imu:
         raise ValueError("upper_imu and reference_imu must be different")
     if rotation.twist_axis not in ("x", "y", "z"):
@@ -319,12 +358,15 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
     )):
         raise ValueError("upper-arm rotation timing values must be positive and finite")
     if rotation.enabled:
-        endpoints = {"imu1": imu1, "imu2": imu2}
         for role in (rotation.upper_imu, rotation.reference_imu):
             if not endpoints[role].enabled:
                 raise ValueError(
                     "upper_arm_rotation requires both upper_imu and reference_imu to be enabled"
                 )
+        shoulder_roles = {shoulder.arm_imu, shoulder.chest_imu}
+        rotation_roles = {rotation.upper_imu, rotation.reference_imu}
+        if shoulder_roles & rotation_roles:
+            raise ValueError("shoulder_imu and upper_arm_rotation must use disjoint IMU sources")
 
     synchronization = SynchronizationConfig(
         max_time_delta_ms=float(sync["max_time_delta_ms"]),
@@ -341,7 +383,14 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
     recording_config = RecordingConfig(output_dir.resolve(), str(recording["format"]))
     if recording_config.format != "csv":
         raise ValueError("only csv recording is supported")
-    return SensorConfig(sleeve, imu1, imu2, rotation, synchronization, recording_config)
+    return SensorConfig(
+        sleeve,
+        *(endpoints[name] for name in IMU_NAMES),
+        shoulder,
+        rotation,
+        synchronization,
+        recording_config,
+    )
 
 
 def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3Config:

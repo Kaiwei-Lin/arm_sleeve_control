@@ -15,20 +15,22 @@ from sleeve_arm.config import (
     load_phase3_config,
     load_phase4_config,
     load_robot_config,
-    load_sensor_config,
 )
 from sleeve_arm.control import ArmMapper, SafeArmController
 from sleeve_arm.domain import ArmAction, ImuFrame, MotionIntent, SensorSample, SleeveFrame
-from sleeve_arm.predictor import ArmMotionPredictor, FlexModelPredictor, RuleBasedPredictor
+from sleeve_arm.predictor import (
+    ArmMotionPredictor,
+    DualImuShoulderPredictor,
+    FlexModelPredictor,
+    RuleBasedPredictor,
+    calibrate_dual_imu_estimator,
+)
 from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibration_samples
 from sleeve_arm.robot import FakeRobotArm
+from sleeve_arm.sync import SensorSynchronizer
 from tools.debug_model_mapping import manual_intent
 from tools import run_manual_model_control, run_model_control
-from tools.run_model_control import (
-    DualImuShoulderPredictor,
-    calibrate_dual_imu_estimator,
-    prepare_flexarm_predictor,
-)
+from tools.run_model_control import _add_latest_pair, prepare_flexarm_predictor
 from tools.test_flex_model import replay
 
 
@@ -429,6 +431,10 @@ def test_robot_connect_precedes_sensor_and_external_model_initialization() -> No
     assert "prepare_flexarm_predictor(" not in runtime
 
 
+def test_dual_imu_predictor_lives_in_reusable_predictor_package() -> None:
+    assert DualImuShoulderPredictor.__module__ == "sleeve_arm.predictor.dual_imu_shoulder"
+
+
 def imu_frame(timestamp: float, quaternion: tuple[float, float, float, float]) -> ImuFrame:
     return ImuFrame(
         timestamp=timestamp,
@@ -443,6 +449,28 @@ def imu_frame(timestamp: float, quaternion: tuple[float, float, float, float]) -
         quat_y=quaternion[2],
         quat_z=quaternion[3],
     )
+
+
+def test_four_imus_route_to_independent_shoulder_and_rotation_pairs() -> None:
+    identity = (1.0, 0.0, 0.0, 0.0)
+    frames = {
+        "imu1": imu_frame(1.000, identity),
+        "imu2": imu_frame(1.005, identity),
+        "imu3": imu_frame(2.000, identity),
+        "imu4": imu_frame(2.005, identity),
+    }
+    sources = {
+        name: SimpleNamespace(latest=lambda frame=frame: frame)
+        for name, frame in frames.items()
+    }
+    shoulder_sync = SensorSynchronizer(20.0, 500.0, True, True)
+    rotation_sync = SensorSynchronizer(20.0, 500.0, True, True)
+
+    _add_latest_pair(shoulder_sync, sources, ("imu1", "imu2"))
+    _add_latest_pair(rotation_sync, sources, ("imu3", "imu4"))
+
+    assert shoulder_sync.latest_imu_pair(20.0) == (frames["imu1"], frames["imu2"])
+    assert rotation_sync.latest_imu_pair(20.0) == (frames["imu3"], frames["imu4"])
 
 
 class RecordingDualImuEstimator:
@@ -511,7 +539,6 @@ def test_dual_imu_update_uses_chest_arm_order_and_maps_direction_magnitude(
     ])
     predictor = DualImuShoulderPredictor(
         estimator,
-        load_sensor_config().upper_arm_rotation,
         max_age_s=None,
     )
 
@@ -533,7 +560,6 @@ def test_dual_imu_transition_holds_last_unambiguous_shoulder_target() -> None:
     ])
     predictor = DualImuShoulderPredictor(
         estimator,
-        load_sensor_config().upper_arm_rotation,
         max_age_s=None,
     )
     neutral = (1.0, 0.0, 0.0, 0.0)

@@ -5,7 +5,7 @@ import argparse
 import math
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum, auto
 from pathlib import Path
@@ -17,12 +17,17 @@ from sleeve_arm.config import (
     DEFAULT_CONFIG_PATH, DEFAULT_PHASE3_CONFIG_PATH, DEFAULT_PHASE4_CONFIG_PATH,
     DEFAULT_SENSOR_CONFIG_PATH, load_phase3_config, load_phase4_config,
     load_robot_config, load_sensor_config, FlexModelConfig, SensorConfig,
-    UpperArmRotationConfig,
 )
 from sleeve_arm.control import ArmMapper, SafeArmController, SensorWatchdog
-from sleeve_arm.domain import ArmAction, ImuFrame, MotionIntent, SensorSample
+from sleeve_arm.domain import ImuFrame, SensorSample
 from sleeve_arm.estimation import UpperArmRotationEstimator, UpperArmRotationResult
-from sleeve_arm.predictor import FlexModelPredictor, RuleBasedPredictor
+from sleeve_arm.predictor import (
+    DualImuShoulderPredictor,
+    FlexModelPredictor,
+    RuleBasedPredictor,
+    calibrate_dual_imu_estimator,
+    imu_quaternion,
+)
 from sleeve_arm.predictor.calibration import collect_calibration_samples
 from sleeve_arm.robot import DyMotorArm, FakeRobotArm
 from sleeve_arm.sources import (
@@ -86,54 +91,22 @@ def prepare_flexarm_predictor(
     return prepared
 
 
-def _add_latest_imus(sync: SensorSynchronizer, sources: dict[str, ImuSource]) -> None:
-    for name, source in sources.items():
+def _add_latest_pair(
+    sync: SensorSynchronizer,
+    sources: dict[str, ImuSource],
+    names: tuple[str, str],
+) -> None:
+    for name, add in zip(names, (sync.add_imu1, sync.add_imu2)):
+        source = sources[name]
         frame = source.latest()
         if frame is None:
             continue
-        (sync.add_imu1 if name == "imu1" else sync.add_imu2)(frame)
+        add(frame)
 
 
-def _imu_quaternion(frame: ImuFrame) -> tuple[float, float, float, float]:
-    values = (frame.quat_w, frame.quat_x, frame.quat_y, frame.quat_z)
-    if any(value is None for value in values):
-        raise ValueError("IMU quaternion is missing")
-    quaternion = tuple(float(value) for value in values)
-    if not all(math.isfinite(value) for value in quaternion):
-        raise ValueError("IMU quaternion must contain four finite WXYZ values")
-    if math.sqrt(sum(value * value for value in quaternion)) <= 1e-12:
-        raise ValueError("IMU quaternion norm must be nonzero")
-    return quaternion  # type: ignore[return-value]
-
-
-def _role_pair(
-    imu1: ImuFrame,
-    imu2: ImuFrame,
-    config: UpperArmRotationConfig,
-) -> tuple[ImuFrame, ImuFrame]:
-    frames = {"imu1": imu1, "imu2": imu2}
-    return frames[config.upper_imu], frames[config.reference_imu]
-
-
-def _rotation_pair(
-    sample: SensorSample,
-    config: UpperArmRotationConfig,
-    max_age_s: float | None = None,
-) -> tuple[ImuFrame, ImuFrame]:
-    if sample.imu1 is None or sample.imu2 is None:
-        raise ValueError("dual-IMU shoulder estimation requires synchronized chest and arm frames")
-    upper, reference = _role_pair(sample.imu1, sample.imu2, config)
-    if max_age_s is not None:
-        now = time.monotonic()
-        if any(abs(now - frame.timestamp) > max_age_s for frame in (upper, reference)):
-            raise ValueError("dual-IMU shoulder pair is stale")
-    return upper, reference
-
-
-def _attach_rotation_pair(
+def _attach_latest_pair(
     sample: SensorSample,
     sync: SensorSynchronizer,
-    config: UpperArmRotationConfig,
     max_sync_ms: float,
 ) -> SensorSample:
     pair = sync.latest_imu_pair(max_sync_ms)
@@ -145,25 +118,100 @@ def _attach_rotation_pair(
 def _latest_imu_pair(
     imu_sources: dict[str, ImuSource],
     sync: SensorSynchronizer,
-    config: UpperArmRotationConfig,
+    names: tuple[str, str],
     max_sync_ms: float,
 ) -> tuple[ImuFrame, ImuFrame] | None:
-    _add_latest_imus(sync, imu_sources)
-    pair = sync.latest_imu_pair(max_sync_ms)
+    _add_latest_pair(sync, imu_sources, names)
+    return sync.latest_imu_pair(max_sync_ms)
+
+
+def _require_fresh_pair(
+    pair: tuple[ImuFrame, ImuFrame] | None,
+    max_age_s: float,
+    label: str,
+) -> tuple[ImuFrame, ImuFrame]:
     if pair is None:
-        return None
-    return _role_pair(*pair, config)
+        raise ValueError(f"{label} requires a synchronized IMU pair")
+    if any(abs(time.monotonic() - frame.timestamp) > max_age_s for frame in pair):
+        raise ValueError(f"{label} IMU pair is stale")
+    return pair
 
 
-def calibrate_dual_imu_estimator(
-    estimator: Any,
-    pairs: Sequence[tuple[ImuFrame, ImuFrame]],
-) -> Any:
-    if len(pairs) < 2:
-        raise ValueError("dual-IMU neutral calibration needs at least 2 synchronized pairs")
-    chest_rest_samples = [_imu_quaternion(reference) for _, reference in pairs]
-    arm_rest_samples = [_imu_quaternion(upper) for upper, _ in pairs]
-    return estimator.calibrate(chest_rest_samples, arm_rest_samples)
+def _pair_synchronizer(sensor_config: SensorConfig) -> SensorSynchronizer:
+    return SensorSynchronizer(
+        sensor_config.synchronization.max_time_delta_ms,
+        sensor_config.synchronization.buffer_duration_ms,
+        imu1_enabled=True,
+        imu2_enabled=True,
+    )
+
+
+def _collect_imu_pairs(
+    imu_sources: dict[str, ImuSource],
+    sensor_config: SensorConfig,
+    names: tuple[str, str],
+    pair_config: Any,
+    sensor_timeout_s: float,
+    *,
+    calibration_seconds: float | None = None,
+    prompt: str,
+    status: str,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> list[tuple[ImuFrame, ImuFrame]]:
+    duration = pair_config.calibration_seconds if calibration_seconds is None else calibration_seconds
+    if not math.isfinite(duration) or duration <= 0.0:
+        raise ValueError("dual-IMU calibration duration must be positive and finite")
+    max_sync_ms = (
+        sensor_config.synchronization.max_time_delta_ms
+        if pair_config.max_sync_ms is None
+        else pair_config.max_sync_ms
+    )
+
+    sync = _pair_synchronizer(sensor_config)
+    startup_deadline = time.monotonic() + pair_config.startup_timeout_s
+    while time.monotonic() < startup_deadline:
+        pair = _latest_imu_pair(imu_sources, sync, names, max_sync_ms)
+        if pair is not None:
+            try:
+                if any(abs(time.monotonic() - frame.timestamp) > sensor_timeout_s for frame in pair):
+                    raise ValueError("dual-IMU pair is stale")
+                imu_quaternion(pair[0])
+                imu_quaternion(pair[1])
+            except ValueError:
+                pass
+            else:
+                break
+        time.sleep(0.001)
+    else:
+        raise RuntimeError(f"no fresh valid {status} quaternion pair before startup timeout")
+
+    input_fn(prompt)
+    print_fn(f"正在采集 {duration:g} 秒 {status} 同步四元数...")
+    sync = _pair_synchronizer(sensor_config)
+    pairs: list[tuple[ImuFrame, ImuFrame]] = []
+    last_pair_key: tuple[int, int] | None = None
+    minimum_timestamp = time.monotonic()
+    deadline = minimum_timestamp + duration
+    while time.monotonic() < deadline:
+        pair = _latest_imu_pair(imu_sources, sync, names, max_sync_ms)
+        if pair is not None:
+            pair_key = (int(pair[0].host_timestamp_ns), int(pair[1].host_timestamp_ns))
+            try:
+                if any(abs(time.monotonic() - frame.timestamp) > sensor_timeout_s for frame in pair):
+                    raise ValueError("dual-IMU pair is stale")
+                if min(frame.timestamp for frame in pair) < minimum_timestamp:
+                    raise ValueError("dual-IMU pair predates calibration prompt")
+                imu_quaternion(pair[0])
+                imu_quaternion(pair[1])
+            except ValueError:
+                pass
+            else:
+                if pair_key != last_pair_key:
+                    pairs.append(pair)
+                    last_pair_key = pair_key
+        time.sleep(0.001)
+    return pairs
 
 
 def prepare_dual_imu_estimator(
@@ -176,140 +224,27 @@ def prepare_dual_imu_estimator(
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[[str], None] = print,
 ) -> tuple[Any, list[tuple[ImuFrame, ImuFrame]]]:
-    config = sensor_config.upper_arm_rotation
-    duration = config.calibration_seconds if calibration_seconds is None else calibration_seconds
-    if not math.isfinite(duration) or duration <= 0.0:
-        raise ValueError("dual-IMU calibration duration must be positive and finite")
+    config = sensor_config.shoulder_imu
     if estimator is None:
         from flexarm import DualImuArmEstimator
 
         estimator = DualImuArmEstimator()
-    max_sync_ms = (
-        sensor_config.synchronization.max_time_delta_ms
-        if config.max_sync_ms is None
-        else config.max_sync_ms
+    pairs = _collect_imu_pairs(
+        imu_sources,
+        sensor_config,
+        (config.arm_imu, config.chest_imu),
+        config,
+        sensor_timeout_s,
+        calibration_seconds=calibration_seconds,
+        prompt="请自然站立、右臂自然下垂并保持静止，按回车开始双 IMU 肩部零位标定：",
+        status="肩部 IMU1/IMU2",
+        input_fn=input_fn,
+        print_fn=print_fn,
     )
-
-    def synchronizer() -> SensorSynchronizer:
-        return SensorSynchronizer(
-            sensor_config.synchronization.max_time_delta_ms,
-            sensor_config.synchronization.buffer_duration_ms,
-            imu1_enabled=True,
-            imu2_enabled=True,
-        )
-
-    sync = synchronizer()
-    startup_deadline = time.monotonic() + config.startup_timeout_s
-    while time.monotonic() < startup_deadline:
-        pair = _latest_imu_pair(imu_sources, sync, config, max_sync_ms)
-        if pair is not None:
-            try:
-                if any(abs(time.monotonic() - frame.timestamp) > sensor_timeout_s for frame in pair):
-                    raise ValueError("dual-IMU shoulder pair is stale")
-                _imu_quaternion(pair[0])
-                _imu_quaternion(pair[1])
-            except ValueError:
-                pass
-            else:
-                break
-        time.sleep(0.001)
-    else:
-        raise RuntimeError("no fresh valid dual-IMU quaternion pair before startup timeout")
-
-    input_fn("请自然站立、右臂自然下垂并保持静止，按回车开始双 IMU 肩部零位标定：")
-    print_fn(f"正在采集 {duration:g} 秒胸部/大臂同步四元数...")
-    sync = synchronizer()  # discard every pre-prompt frame
-    pairs: list[tuple[ImuFrame, ImuFrame]] = []
-    last_pair_key: tuple[int, int] | None = None
-    deadline = time.monotonic() + duration
-    while time.monotonic() < deadline:
-        pair = _latest_imu_pair(imu_sources, sync, config, max_sync_ms)
-        if pair is not None:
-            pair_key = (int(pair[0].host_timestamp_ns), int(pair[1].host_timestamp_ns))
-            try:
-                if any(abs(time.monotonic() - frame.timestamp) > sensor_timeout_s for frame in pair):
-                    raise ValueError("dual-IMU shoulder pair is stale")
-                _imu_quaternion(pair[0])
-                _imu_quaternion(pair[1])
-            except ValueError:
-                pass
-            else:
-                if pair_key != last_pair_key:
-                    pairs.append(pair)
-                    last_pair_key = pair_key
-        time.sleep(0.001)
     calibration = calibrate_dual_imu_estimator(estimator, pairs)
     sample_count = int(getattr(calibration, "sample_count", len(pairs)))
     print_fn(f"双 IMU 肩部零位标定完成：samples={sample_count}")
     return estimator, pairs
-
-
-class DualImuShoulderPredictor:
-    """Adapt DualImuArmEstimator direction/magnitude output to robot semantics."""
-
-    _ACTIVE = {
-        "Forward": (ArmAction.FORWARD, 1.0, 0.0),
-        "Backward": (ArmAction.BACKWARD, -1.0, 0.0),
-        "Lateral": (ArmAction.LATERAL, 0.0, 1.0),
-    }
-
-    def __init__(
-        self,
-        estimator: Any,
-        config: UpperArmRotationConfig,
-        max_age_s: float | None,
-    ) -> None:
-        self.estimator = estimator
-        self.config = config
-        self.max_age_s = max_age_s
-        self.last_result: Any | None = None
-        self.last_frames: tuple[ImuFrame, ImuFrame] | None = None
-        self._last_targets: tuple[float | None, float | None] = (None, None)
-
-    def predict(self, sample: SensorSample) -> MotionIntent:
-        upper, chest = _rotation_pair(sample, self.config, self.max_age_s)
-        chest_q = _imu_quaternion(chest)
-        arm_q = _imu_quaternion(upper)
-        started = time.perf_counter()
-        result = self.estimator.update(chest_q, arm_q)
-        inference_ms = (time.perf_counter() - started) * 1000.0
-
-        direction = getattr(result, "direction", None)
-        if direction not in (*self._ACTIVE, "Rest", "Transition"):
-            raise ValueError(f"invalid dual-IMU shoulder direction: {direction!r}")
-        magnitude_deg = float(getattr(result, "magnitude_deg", math.nan))
-        confidence = float(getattr(result, "confidence", math.nan))
-        if not math.isfinite(magnitude_deg) or not 0.0 <= magnitude_deg <= 180.0:
-            raise ValueError("dual-IMU shoulder magnitude_deg must be finite and in [0, 180]")
-        if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
-            raise ValueError("dual-IMU shoulder confidence must be finite and in [0, 1]")
-
-        action = None
-        if direction in self._ACTIVE:
-            action, flexion_sign, abduction_sign = self._ACTIVE[direction]
-            magnitude_rad = math.radians(magnitude_deg)
-            targets = (flexion_sign * magnitude_rad, abduction_sign * magnitude_rad)
-            self._last_targets = targets
-        elif direction == "Rest":
-            targets = (0.0, 0.0)
-            self._last_targets = targets
-        else:
-            # Direction + magnitude cannot uniquely decompose a diagonal transition.
-            targets = self._last_targets
-
-        self.last_result = result
-        self.last_frames = (upper, chest)
-        return MotionIntent(
-            timestamp=sample.timestamp,
-            shoulder_flexion_rad=targets[0],
-            shoulder_abduction_rad=targets[1],
-            action=action,
-            confidence=confidence,
-            angle_deg=magnitude_deg,
-            inference_ms=inference_ms,
-            model_action=direction,
-            moving=direction != "Rest",
-        )
 
 
 def main() -> int:
@@ -323,7 +258,7 @@ def main() -> int:
     parser.add_argument("--sensor-config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
     parser.add_argument("--phase3-config", type=Path, default=DEFAULT_PHASE3_CONFIG_PATH)
     parser.add_argument("--phase4-config", type=Path, default=DEFAULT_PHASE4_CONFIG_PATH)
-    parser.add_argument("--calibration-seconds", type=float, help="override neutral dual-IMU calibration duration")
+    parser.add_argument("--calibration-seconds", type=float, help="override both dual-IMU calibration durations")
     parser.add_argument("--library", type=Path)
     parser.add_argument(
         "--bridge-diagnostics",
@@ -354,7 +289,10 @@ def main() -> int:
         phase3 = load_phase3_config(args.phase3_config)
         phase4 = load_phase4_config(args.phase4_config)
         sensor_config = load_sensor_config(args.sensor_config)
+        shoulder_config = sensor_config.shoulder_imu
         rotation_config = sensor_config.upper_arm_rotation
+        shoulder_names = (shoulder_config.arm_imu, shoulder_config.chest_imu)
+        rotation_names = (rotation_config.upper_imu, rotation_config.reference_imu)
         if phase4.predictor_backend != "dual_imu":
             raise ValueError(
                 "run_model_control requires predictor.backend=dual_imu; "
@@ -401,22 +339,24 @@ def main() -> int:
             if args.sleeve == "fake"
             else create_sleeve_source(sensor_config)
         )
-        for name in (rotation_config.upper_imu, rotation_config.reference_imu):
+        required_imus = shoulder_names + (rotation_names if rotation_config.enabled else ())
+        delayed_imus = {shoulder_names[1], rotation_names[1]}
+        for name in required_imus:
             endpoint = getattr(sensor_config, name)
             if not endpoint.enabled:
-                raise ValueError(f"dual-IMU shoulder estimation requires sensors.{name}.enabled=true")
+                raise ValueError(f"model control requires sensors.{name}.enabled=true")
             created = (
-                FakeImuSource(timestamp_offset_s=(0.0 if name == rotation_config.upper_imu else 0.005))
+                FakeImuSource(timestamp_offset_s=(0.005 if name in delayed_imus else 0.0))
                 if args.imus == "fake"
                 else create_imu_source(name, endpoint)
             )
             if created is None:
-                raise RuntimeError(f"dual-IMU shoulder estimation could not create configured {name} source")
+                raise RuntimeError(f"model control could not create configured {name} source")
             imu_sources[name] = created
         source.start()
         for imu_source in imu_sources.values():
             imu_source.start()
-        shoulder_estimator, neutral_pairs = prepare_dual_imu_estimator(
+        shoulder_estimator, _ = prepare_dual_imu_estimator(
             imu_sources,
             sensor_config,
             phase3.sensor_timeout_ms / 1000.0,
@@ -424,12 +364,16 @@ def main() -> int:
         )
         shoulder_predictor = DualImuShoulderPredictor(
             shoulder_estimator,
-            rotation_config,
             phase3.sensor_timeout_ms / 1000.0,
         )
         elbow_predictor = RuleBasedPredictor(elbow_config)
 
-        max_sync_ms = (
+        shoulder_max_sync_ms = (
+            sensor_config.synchronization.max_time_delta_ms
+            if shoulder_config.max_sync_ms is None
+            else shoulder_config.max_sync_ms
+        )
+        rotation_max_sync_ms = (
             sensor_config.synchronization.max_time_delta_ms
             if rotation_config.max_sync_ms is None
             else rotation_config.max_sync_ms
@@ -437,33 +381,46 @@ def main() -> int:
         if rotation_config.enabled:
             rotation_estimator = UpperArmRotationEstimator(
                 rotation_config.ema_alpha,
-                max_sync_ms,
+                rotation_max_sync_ms,
                 rotation_config.twist_axis,
             )
-            rotation_estimator.calibrate(neutral_pairs)
+            rotation_pairs = _collect_imu_pairs(
+                imu_sources,
+                sensor_config,
+                rotation_names,
+                rotation_config,
+                phase3.sensor_timeout_ms / 1000.0,
+                calibration_seconds=args.calibration_seconds,
+                prompt="请保持大臂旋转零位并静止，按回车开始 IMU3/IMU4 旋转零位标定：",
+                status="大臂旋转 IMU3/IMU4",
+            )
+            rotation_estimator.calibrate(rotation_pairs)
+            print(f"大臂旋转零位标定完成：samples={len(rotation_pairs)}")
             last_rotation_rad = 0.0
 
-        sync = SensorSynchronizer(
-            sensor_config.synchronization.max_time_delta_ms,
-            sensor_config.synchronization.buffer_duration_ms,
-            imu1_enabled=True,
-            imu2_enabled=True,
-        )
+        shoulder_sync = _pair_synchronizer(sensor_config)
+        rotation_sync = _pair_synchronizer(sensor_config) if rotation_config.enabled else None
         readiness_deadline = time.monotonic() + phase3.hard_timeout_ms / 1000.0
         sample = intent = None
         while time.monotonic() < readiness_deadline:
-            _add_latest_imus(sync, imu_sources)
+            _add_latest_pair(shoulder_sync, imu_sources, shoulder_names)
+            if rotation_sync is not None:
+                _add_latest_pair(rotation_sync, imu_sources, rotation_names)
             frame = source.latest()
             if frame is not None:
-                sample = sync.synchronize(frame)
-                sample = _attach_rotation_pair(sample, sync, rotation_config, max_sync_ms)
+                sample = shoulder_sync.synchronize(frame)
+                sample = _attach_latest_pair(sample, shoulder_sync, shoulder_max_sync_ms)
                 try:
                     shoulder_intent = shoulder_predictor.predict(sample)
                     elbow_intent = elbow_predictor.predict(sample)
                     intent = replace(shoulder_intent, elbow_flexion=elbow_intent.elbow_flexion)
-                    last_rotation_frames = shoulder_predictor.last_frames
                     if rotation_estimator is not None:
-                        assert last_rotation_frames is not None
+                        assert rotation_sync is not None
+                        last_rotation_frames = _require_fresh_pair(
+                            rotation_sync.latest_imu_pair(rotation_max_sync_ms),
+                            phase3.sensor_timeout_ms / 1000.0,
+                            "upper-arm rotation",
+                        )
                         rotation_result = rotation_estimator.update(*last_rotation_frames)
                         last_rotation_rad = math.radians(rotation_result.difference_deg)
                         intent = replace(intent, upper_arm_rotation_rad=last_rotation_rad)
@@ -496,15 +453,17 @@ def main() -> int:
         while deadline is None or time.monotonic() < deadline:
             imu_source_error: Exception | None = None
             try:
-                _add_latest_imus(sync, imu_sources)
+                _add_latest_pair(shoulder_sync, imu_sources, shoulder_names)
+                if rotation_sync is not None:
+                    _add_latest_pair(rotation_sync, imu_sources, rotation_names)
             except Exception as exc:
                 imu_source_error = exc
             frame = source.latest()
             now = time.monotonic()
             cycles += 1
             if frame is not None:
-                sample = sync.synchronize(frame)
-                sample = _attach_rotation_pair(sample, sync, rotation_config, max_sync_ms)
+                sample = shoulder_sync.synchronize(frame)
+                sample = _attach_latest_pair(sample, shoulder_sync, shoulder_max_sync_ms)
                 age = watchdog.age(sample.timestamp, now)
                 if watchdog.is_hard_timeout(sample.timestamp, now):
                     raise RuntimeError(f"Sleeve hard timeout: {age * 1000:.1f} ms")
@@ -530,10 +489,14 @@ def main() -> int:
                     else:
                         if watchdog.is_hard_timeout(sample.timestamp, time.monotonic()):
                             raise RuntimeError("prediction completed after Sleeve hard timeout")
-                        last_rotation_frames = shoulder_predictor.last_frames
                         if rotation_estimator is not None:
                             try:
-                                assert last_rotation_frames is not None
+                                assert rotation_sync is not None
+                                last_rotation_frames = _require_fresh_pair(
+                                    rotation_sync.latest_imu_pair(rotation_max_sync_ms),
+                                    phase3.sensor_timeout_ms / 1000.0,
+                                    "upper-arm rotation",
+                                )
                                 rotation_result = rotation_estimator.update(*last_rotation_frames)
                                 last_rotation_rad = math.radians(rotation_result.difference_deg)
                             except Exception as exc:
@@ -579,12 +542,20 @@ def main() -> int:
                             f" imu_sync_rejected={rotation_estimator.sync_rejected_count}"
                             f" rotation_invalid={rotation_invalid}"
                         )
-                    if args.imu_debug and last_rotation_frames is not None:
-                        upper, chest = last_rotation_frames
-                        rotation_telemetry += (
-                            f" arm_q={(upper.quat_w, upper.quat_x, upper.quat_y, upper.quat_z)}"
-                            f" chest_q={(chest.quat_w, chest.quat_x, chest.quat_y, chest.quat_z)}"
-                        )
+                    if args.imu_debug:
+                        shoulder_frames = shoulder_predictor.last_frames
+                        if shoulder_frames is not None:
+                            arm, chest = shoulder_frames
+                            rotation_telemetry += (
+                                f" shoulder_arm_q={(arm.quat_w, arm.quat_x, arm.quat_y, arm.quat_z)}"
+                                f" shoulder_chest_q={(chest.quat_w, chest.quat_x, chest.quat_y, chest.quat_z)}"
+                            )
+                        if last_rotation_frames is not None:
+                            upper, reference = last_rotation_frames
+                            rotation_telemetry += (
+                                f" rotation_upper_q={(upper.quat_w, upper.quat_x, upper.quat_y, upper.quat_z)}"
+                                f" rotation_reference_q={(reference.quat_w, reference.quat_x, reference.quat_y, reference.quat_z)}"
+                            )
                     print(
                         f"state={state.name} sleeve_fps={source.stats.estimated_fps:.1f} "
                         f"control_fps={cycles / max(now-started, 1e-9):.1f} "
