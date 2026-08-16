@@ -33,6 +33,18 @@ def calibrate_dual_imu_estimator(
     return estimator.calibrate(chest_rest_samples, arm_rest_samples)
 
 
+def calibrate_dual_imu_forward(
+    estimator: Any,
+    pairs: Sequence[tuple[ImuFrame, ImuFrame]],
+) -> Any:
+    """Learn the forward direction from synchronized ``(arm, chest)`` pairs."""
+    if len(pairs) < 2:
+        raise ValueError("dual-IMU forward calibration needs at least 2 synchronized pairs")
+    chest_forward_samples = [imu_quaternion(chest) for _, chest in pairs]
+    arm_forward_samples = [imu_quaternion(arm) for arm, _ in pairs]
+    return estimator.calibrate_forward(chest_forward_samples, arm_forward_samples)
+
+
 class DualImuShoulderPredictor(MotionPredictor):
     """Adapt DualImuArmEstimator using ``sample.imu1=arm`` and ``sample.imu2=chest``."""
 

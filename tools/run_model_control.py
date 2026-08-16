@@ -24,6 +24,7 @@ from sleeve_arm.predictor import (
     DualImuShoulderPredictor,
     FlexModelPredictor,
     RuleBasedPredictor,
+    calibrate_dual_imu_forward,
     calibrate_dual_imu_estimator,
     imu_quaternion,
 )
@@ -226,8 +227,14 @@ def prepare_dual_imu_estimator(
     if estimator is None:
         from flexarm import DualImuArmEstimator
 
-        estimator = DualImuArmEstimator()
-    pairs = _collect_imu_pairs(
+        estimator = DualImuArmEstimator(
+            down_axis=(-1, 0, 0),
+            forward_axis=(0, 0, 1),
+            lateral_axis=(0, 1, 0),
+            rest_threshold_deg=5,
+            dominance_ratio=1.1,
+        )
+    rest_pairs = _collect_imu_pairs(
         imu_sources,
         sensor_config,
         (config.arm_imu, config.chest_imu),
@@ -239,10 +246,25 @@ def prepare_dual_imu_estimator(
         input_fn=input_fn,
         print_fn=print_fn,
     )
-    calibration = calibrate_dual_imu_estimator(estimator, pairs)
-    sample_count = int(getattr(calibration, "sample_count", len(pairs)))
+    calibration = calibrate_dual_imu_estimator(estimator, rest_pairs)
+    sample_count = int(getattr(calibration, "sample_count", len(rest_pairs)))
     print_fn(f"双 IMU 肩部零位标定完成：samples={sample_count}")
-    return estimator, pairs
+
+    forward_pairs = _collect_imu_pairs(
+        imu_sources,
+        sensor_config,
+        (config.arm_imu, config.chest_imu),
+        config,
+        sensor_timeout_s,
+        calibration_seconds=calibration_seconds,
+        prompt="请将右臂向身体正前方抬起并保持在 45–60°，按回车开始双 IMU 肩部前抬方向标定：",
+        status="肩部 IMU1/IMU2 前抬方向",
+        input_fn=input_fn,
+        print_fn=print_fn,
+    )
+    calibrate_dual_imu_forward(estimator, forward_pairs)
+    print_fn(f"双 IMU 肩部前抬方向标定完成：samples={len(forward_pairs)}")
+    return estimator, rest_pairs
 
 
 def main() -> int:

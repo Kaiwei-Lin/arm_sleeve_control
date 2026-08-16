@@ -25,6 +25,7 @@ from sleeve_arm.predictor import (
     DualImuShoulderPredictor,
     FlexModelPredictor,
     RuleBasedPredictor,
+    calibrate_dual_imu_forward,
     calibrate_dual_imu_estimator,
 )
 from sleeve_arm.predictor.calibration import calibrate_estimator, collect_calibration_samples
@@ -592,11 +593,17 @@ class RecordingDualImuEstimator:
     def __init__(self, results: list[SimpleNamespace] | None = None) -> None:
         self.results = iter(results or [])
         self.calibration_calls: list[tuple[list[tuple[float, ...]], list[tuple[float, ...]]]] = []
+        self.forward_calibration_calls: list[tuple[list[tuple[float, ...]], list[tuple[float, ...]]]] = []
         self.update_calls: list[tuple[tuple[float, ...], tuple[float, ...]]] = []
 
     def calibrate(self, chest_rest_samples, arm_rest_samples):
         self.calibration_calls.append((list(chest_rest_samples), list(arm_rest_samples)))
         return SimpleNamespace(sample_count=len(chest_rest_samples))
+
+    def calibrate_forward(self, chest_forward_samples, arm_forward_samples):
+        self.forward_calibration_calls.append(
+            (list(chest_forward_samples), list(arm_forward_samples))
+        )
 
     def update(self, chest_q, arm_q):
         self.update_calls.append((tuple(chest_q), tuple(arm_q)))
@@ -629,6 +636,20 @@ def test_dual_imu_calibration_passes_chest_then_arm_wxyz_samples() -> None:
 
     assert calibration.sample_count == 2
     assert estimator.calibration_calls == [(list(chest), list(arm))]
+
+
+def test_dual_imu_forward_calibration_passes_chest_then_arm_wxyz_samples() -> None:
+    chest = ((0.99, 0.0, 0.1, 0.0), (0.98, 0.0, 0.2, 0.0))
+    arm = ((0.92, 0.0, 0.38, 0.0), (0.90, 0.0, 0.44, 0.0))
+    pairs = [
+        (imu_frame(float(index), arm_q), imu_frame(float(index), chest_q))
+        for index, (chest_q, arm_q) in enumerate(zip(chest, arm), start=1)
+    ]
+    estimator = RecordingDualImuEstimator()
+
+    calibrate_dual_imu_forward(estimator, pairs)
+
+    assert estimator.forward_calibration_calls == [(list(chest), list(arm))]
 
 
 @pytest.mark.parametrize(

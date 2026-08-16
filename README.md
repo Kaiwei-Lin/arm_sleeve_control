@@ -356,12 +356,19 @@ predictor:
 ```python
 from flexarm import DualImuArmEstimator
 
-estimator = DualImuArmEstimator()
+estimator = DualImuArmEstimator(
+    down_axis=(-1, 0, 0),
+    forward_axis=(0, 0, 1),
+    lateral_axis=(0, 1, 0),
+    rest_threshold_deg=5,
+    dominance_ratio=1.1,
+)
 estimator.calibrate(chest_rest_samples, arm_rest_samples)
+estimator.calibrate_forward(chest_forward_samples, arm_forward_samples)
 result = estimator.update(chest_q, arm_q)
 ```
 
-`shoulder_imu.arm_imu=imu1` 安装在右大臂，`shoulder_imu.chest_imu=imu2` 安装在胸部。两路输入均按 `[w, x, y, z]` 解释为 Sensor→同一 World 坐标系的旋转；程序消费 `result.direction`、`result.magnitude_deg` 和 `result.confidence`。每次启动或重新佩戴后都会采集同步 neutral 样本并标定，双 IMU 模式不复用旧穿戴零位。
+`shoulder_imu.arm_imu=imu1` 安装在右大臂，`shoulder_imu.chest_imu=imu2` 安装在胸部。两路输入均按 `[w, x, y, z]` 解释为 Sensor→同一 World 坐标系的旋转；程序消费 `result.direction`、`result.magnitude_deg` 和 `result.confidence`。每次启动或重新佩戴后，程序先提示自然下垂并采集同步样本完成零位标定，再提示保持正前方抬起 45–60° 并采集第二组同步样本学习前抬方向；两步完成后才进入实时推理。`--calibration-seconds` 对这两次采集分别生效，双 IMU 模式不复用旧穿戴标定。
 
 ```text
 IMU2 chest_q --+

@@ -1,6 +1,7 @@
 from sleeve_arm.predictor.base import MotionPredictor
 from sleeve_arm.predictor.dual_imu_shoulder import (
     DualImuShoulderPredictor,
+    calibrate_dual_imu_forward,
     calibrate_dual_imu_estimator,
     imu_quaternion,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "FlexModelPredictor",
     "MotionPredictor",
     "RuleBasedPredictor",
+    "calibrate_dual_imu_forward",
     "calibrate_dual_imu_estimator",
     "imu_quaternion",
 ]
