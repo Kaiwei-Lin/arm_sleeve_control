@@ -2,6 +2,8 @@
 
 面向真实机械臂的安全控制层，以及与机械臂完全隔离的传感器采集基础。
 
+正式的三方向右肩 quaternion 机器学习数据采集入口与实验说明见 [docs/shoulder_dataset_collection.md](docs/shoulder_dataset_collection.md)。该 headless CLI 只采集 sleeve 与双 IMU，不连接机器人。
+
 ```text
 Python tools -> SafetyController -> DyMotorArm (ctypes)
              -> libdymotor_bridge.so -> 厂家 libMotorDrive.so -> mechanical arm
@@ -9,7 +11,7 @@ Python tools -> SafetyController -> DyMotorArm (ctypes)
 
 ## 项目当前阶段
 
-Phase 1 原有三个机械臂关节的位置控制与 PVCT 读取现已扩展加入大臂旋转电机。Phase 2 新增袖套、Optional 双 IMU、时间同步和数据记录。Phase 3/4 已接入 CH2 肘部规则与肩部 FlexArmEstimator；启用配置后，双 IMU estimator 可再产生 `upper_arm_rotation`，四个语义关节经同一个 Mapper、SafetyController 和 Robot command owner 下发。
+Phase 1 原有三个机械臂关节的位置控制与 PVCT 读取现已扩展加入大臂旋转电机。Phase 2 新增袖套、双 IMU、时间同步和数据记录。Phase 3/4 已接入 CH2 肘部规则与双 IMU 肩部方向/幅度估计；启用配置后，同一对 IMU 还可产生 `upper_arm_rotation`，四个语义关节经同一个 Mapper、SafetyController 和 Robot command owner 下发。
 
 当前 DyMotor 连接严格复用厂家 `pose_control_get_pvct.c` 的启动 pipeline，因此任何连接都会执行状态机切换、位置模式、45 次 `big_pose` 预填充和 Servo On。`--execute` 只控制是否在启动完成后继续发送工具请求的目标；即使不带 `--execute`，也必须按真机使能操作对待。
 
@@ -271,7 +273,7 @@ Sleeve CH2 → SensorSample → RuleBasedPredictor → MotionIntent.elbow_flexio
            → ArmMapper → SafeArmController → elbow_flexion (ID25/CAN2)
 ```
 
-串口协议的字段按顺序命名 CH1、CH2……，因此配置中的 `sleeve_channel: 2` 是用户可读的 1-based 编号，内部只在 Predictor 中转换为 `SleeveFrame.channels[1]`。Phase 3 的 `run_sleeve_elbow.py` 仍只读取 Sleeve，并保持其他关节启动位置；双 IMU rotation 只在 `run_model_control.py` 且显式启用对应配置时加入。
+串口协议的字段按顺序命名 CH1、CH2……，因此配置中的 `sleeve_channel: 2` 是用户可读的 1-based 编号，内部只在 Predictor 中转换为 `SleeveFrame.channels[1]`。Phase 3 的 `run_sleeve_elbow.py` 仍只读取 Sleeve，并保持其他关节启动位置；`run_model_control.py` 的肩部始终读取胸部与大臂双 IMU，`upper_arm_rotation.enabled` 只控制是否额外生成第四个 twist 自由度。
 
 Phase 3 配置位于 `configs/phase3.yaml`。`input_min`/`input_max` 是两个人体标定姿态的 CH2 实测端点，`angle_range.min_deg/max_deg` 是这两个姿态对应的人体绝对肘角；任一缺失都会阻止控制启动。临时规则先将 CH2 clamp/归一化，再线性换算成绝对人体肘角 rad。Mapper 不叠加启动位置；DyMotor backend 以 `SDK target = zero_position + direction × semantic target` 转换，最终仍必须经过 Phase 1 的位置、单步、速度、跟踪误差和反馈错误检查。
 
@@ -317,84 +319,54 @@ python tools/run_sleeve_elbow.py --sleeve real --robot dymotor --execute
 
 必须在急停可用、现场监护、配置完成且前四步结果正确后执行。顺序为三路稳定反馈 → 保存启动位置 → Sleeve fresh/CH2 有效 → Servo On → 首条启动位置命令 → 仅 ID25 在启动位置附近小范围跟随。`Ctrl+C`、source/robot 异常或 hard timeout 都停止新目标并执行 Servo Off、robot close、source close。
 
-以上是 Phase 3 的边界；Phase 3 本身不包含 CH3/CH4 肩部控制、训练模型、IMU 融合或三自由度袖套控制。Phase 4 在下面通过同一 `MotionPredictor.predict(SensorSample) -> MotionIntent` contract 接入外部模型，不修改 SafetyController 或 Robot 层。
+以上是 Phase 3 的边界；Phase 3 本身不包含肩部控制、双 IMU 姿态估计或三自由度控制。Phase 4 在下面把双 IMU 估计结果转换为现有 `MotionIntent`，不修改 SafetyController 或 Robot 层。
 
-## Phase 4 — FlexArmEstimator Model Integration（当前）
+## Phase 4 — DualImuArmEstimator shoulder control（当前）
 
-当前肩部模型已经迁移到 `flexarm-estimator 0.1.0`。本仓库不复制模型包源码、
-wheel 或训练权重；控制代码只调用已安装包的公开入口，并从外置目录加载模型产物。
+`tools/run_model_control.py` 的肩部模型使用以下公开 API：
 
-安装 wheel（远程控制环境已安装时无需重复执行）：
+```python
+from flexarm import DualImuArmEstimator
 
-```powershell
-python -m pip install "E:\PythonProject\electronic_skin_project\袖套控制\arm_data_collector\flexarm_estimator\dist\flexarm_estimator-0.1.0-py3-none-any.whl"
+estimator = DualImuArmEstimator()
+estimator.calibrate(chest_rest_samples, arm_rest_samples)
+result = estimator.update(chest_q, arm_q)
 ```
 
-`configs/phase4.yaml` 中的 `model_dir` 必须指向包含 `metadata.json`、分类器和三个
-角度回归器的 `models` 子目录。当前配置为：
-
-```yaml
-predictor:
-  backend: flexarm_estimator
-  model_dir: E:/PythonProject/electronic_skin_project/袖套控制/arm_data_collector/flexarm_estimator/models
-  sleeve_channels: [3, 4, 5]
-  calibration_file: ../calibrations/flexarm_live_calibration.json
-  calibration_seconds: 3.0
-```
-
-若远程系统目录不同，只修改 `model_dir`；不需要把 `flexarm_estimator/src` 加入本项目。
+胸部和大臂输入都按 `[w, x, y, z]`，表示各自 Sensor→同一 World 坐标系的旋转。`reference_imu` 是胸部 IMU，`upper_imu` 是右大臂 IMU；默认角色为 `imu2` 和 `imu1`。运行代码只消费 `result.direction`、`result.magnitude_deg` 和 `result.confidence`。
 
 当前数据流：
 
 ```text
-CH2 -> RuleBasedPredictor ---------------------------> elbow_flexion
-CH3/CH4/CH5 -> FlexArmEstimator.update(timestamp_ns) -> shoulder action/angle
-                         -> ArmMotionPredictor -> ArmMapper
-                         -> SafeArmController -> Robot
+CH2 ----------------------------------> RuleBasedPredictor -> elbow_flexion
+reference_imu WXYZ -> chest_q --+
+                                +-> DualImuArmEstimator -> direction/magnitude
+upper_imu WXYZ ----> arm_q -----+                       -> shoulder targets
+                                          -> ArmMapper -> SafeArmController -> Robot
 ```
 
-每次重新穿戴袖套后，默认执行约 3 秒自然下垂标定。单独标定且不连接机器人：
+每次启动以及每次重新佩戴 IMU 后都必须标定。程序确认两枚 IMU 有新鲜、同步且合法的四元数后，提示自然站立、右臂自然下垂并保持静止；随后采集多帧并调用 `calibrate(chest_rest_samples, arm_rest_samples)`。可用 `--calibration-seconds` 覆盖 `configs/sensors.yaml` 中的标定时长，不支持复用旧穿戴的零位。
 
-```powershell
-python tools/calibrate_flex_model.py
-```
-
-模型单独测试默认也会现场标定：
-
-```powershell
-python tools/test_flex_model.py
-```
-
-仅在确认保存的标定与当前穿戴一致时显式复用：
-
-```powershell
-python tools/test_flex_model.py --reuse-calibration
-python tools/run_model_control.py --sleeve real --robot fake --reuse-calibration
-```
-
-模型产生 `Forward`、`Backward`、`Lateral` 时分别映射为肩前屈、负向肩前屈和
-肩外展绝对语义角。`Rest` 与 `Unknown` 是正常状态：肩部保持最近一次有效目标；
-尚无有效活动预测时保持机器人启动位置；CH2 肘部预测仍继续更新。日志同时输出
-`action_conf`、`angle_conf`、`moving`、模型角度与推理时间。
+输出映射为绝对人体语义角：`Forward` 为正肩前屈，`Backward` 为负肩前屈，`Lateral` 为肩外展，幅度均取 `magnitude_deg`；`Rest` 回到肩前屈/外展 0°。`Transition` 表示没有主导方向，仅靠 direction 和 magnitude 无法唯一拆成两个关节角，因此保持上一组明确肩部目标，同时 CH2 肘部仍继续更新。日志输出 `direction`、`magnitude_deg`、`confidence` 和推理时间。
 
 严格按以下顺序进行硬件验证；DyMotor dry-run 也会执行厂家 Servo On pipeline，只有最后一步会发送模型生成的位置目标：
 
 ```powershell
-# 1. 真实 Sleeve + FakeRobot（默认现场标定）
-python tools/run_model_control.py --sleeve real --robot fake
+# 1. 真实 Sleeve + 双 IMU + FakeRobot（现场自然下垂标定）
+python tools/run_model_control.py --sleeve real --imus real --robot fake
 
-# 2. 真实 Sleeve + DyMotor dry-run；厂家 pipeline 会 Servo On，但不发模型目标
-python tools/run_model_control.py --sleeve real --robot dymotor
+# 2. 真实传感器 + DyMotor dry-run；厂家 pipeline 会 Servo On，但不发模型目标
+python tools/run_model_control.py --sleeve real --imus real --robot dymotor
 
 # 3. 现场急停、监护、零位和限位均确认后才执行
-python tools/run_model_control.py --sleeve real --robot dymotor --execute
+python tools/run_model_control.py --sleeve real --imus real --robot dymotor --execute
 ```
 
-机器人先按当前厂家 pipeline 连接；随后完成模型加载、Sleeve 标定以及可选双 IMU 零位标定。IMU 标定完成以前不会产生 rotation 目标。模型位置目标仍必须经过 `SafeArmController`，且必须显式提供 `--execute`；但连接阶段的厂家 Servo On 不受该开关控制。
+机器人先按当前厂家 pipeline 连接；随后才创建传感器、导入/创建估计器并执行双 IMU 零位标定。标定完成以前不会产生肩部或 rotation 目标。模型位置目标仍必须经过 `SafeArmController`，且必须显式提供 `--execute`；但连接阶段的厂家 Servo On 不受该开关控制。
 
 ## Dual IMU upper-arm rotation
 
-`upper_arm_rotation.enabled: false` 时不创建 IMU Source、不做零位标定，原有三自由度管线保持不变。启用时，`upper_imu` 与 `reference_imu` 必须分别指向已启用且端口有效的 `imu1`/`imu2`：
+双 IMU Source 和肩部零位标定始终启用。`upper_arm_rotation.enabled: false` 只关闭第四个 twist 输出；启用时，它复用肩部的同步帧与自然下垂标定数据。`upper_imu` 与 `reference_imu` 必须分别指向已启用且端口有效的 `imu1`/`imu2`：
 
 ```yaml
 upper_arm_rotation:
@@ -417,7 +389,7 @@ relative_delta = inverse(relative_zero) * relative_now
 upper_arm_rotation_deg = world.filtered_deg - relative.filtered_deg
 ```
 
-两路 twist 均保留 ±180° unwrap 和配置化 EMA。当前 `max_sync_ms: null`，每次直接使用两个 IMU 各自最新的帧，时间差只用于 telemetry，不因时间戳未对齐而拒绝；任一帧 stale、四元数缺失或非法时仍不生成新目标。以后若需要严格同步，可填写正数毫秒阈值。短暂失败保持最后安全目标，连续失败进入现有 FAULT 流程。Estimator 输出的是人体语义角，转为 rad 后仍须经过 `ArmMapper`（robot zero/direction/limits）和 `SafeArmController`，不会直接发给 ID24。
+两路 twist 均保留 ±180° unwrap 和配置化 EMA。`max_sync_ms: null` 时，肩部与 twist 都回退到 `synchronization.max_time_delta_ms`；超过阈值的 IMU 对、stale 帧或非法四元数不会产生新目标。短暂失败保持最后安全目标，连续失败进入现有 FAULT 流程。Estimator 输出的是人体语义角，转为 rad 后仍须经过 `ArmMapper`（robot zero/direction/limits）和 `SafeArmController`，不会直接发给电机。
 
 先只测试双 IMU，不创建 Robot：
 
@@ -425,7 +397,7 @@ upper_arm_rotation_deg = world.filtered_deg - relative.filtered_deg
 python tools/test_upper_arm_rotation.py --config configs/sensors.yaml
 ```
 
-程序会在两路有效同步四元数 ready 后提示保持当前大臂旋转零位约 2 秒；该姿态被定义为 0°，不要求手臂水平。无硬件算法流程可用同一份启用配置运行 `--fake --duration 5`。
+程序会在两路有效同步四元数 ready 后提示自然站立、右臂自然下垂并保持静止；该批数据同时作为肩部 neutral 和可选大臂 twist 零位。无硬件控制流程可使用 `--sleeve fake --imus fake --robot fake --duration 5`（仍需提供含新 API 的 `flexarm` 包）。
 
 融合测试依次执行：
 
@@ -440,7 +412,7 @@ python tools/run_model_control.py --sleeve real --imus real --robot dymotor
 python tools/run_model_control.py --sleeve real --imus real --robot dymotor --execute
 ```
 
-真机前必须确认机器端 ID24/CAN2 的 zero、direction、min/max，以及 IMU 角色、安装轴、输出正方向和首次小范围目标。双 IMU estimator 与 FlexArmEstimator 并行运行，不修改 Flex 模型输入或算法。
+真机前必须确认所有受控电机的 zero、direction、min/max，以及胸部/大臂 IMU 角色、安装轴、输出正方向、时间同步和首次小范围目标。肩部方向/幅度与可选 twist 使用同一对 IMU，但由各自 estimator 计算。
 
 ## Phase 4 — Legacy FlexPredictor Notes（已废弃，请勿执行）
 
@@ -691,4 +663,4 @@ third_party/dymotor_sdk/           只读厂家 SDK 与示例
 
 ## 当前未验证内容
 
-传感器端口名、真实采样率、丢包率、20 ms 同步阈值和 500 ms 缓冲时长仍需现场验证。当前已经接入 FlexArmEstimator 与独立双 IMU rotation estimator，但尚未实现真正的 Sleeve+IMU 融合模型；双 IMU 只并行产生 `upper_arm_rotation` 语义量。
+传感器端口名、真实采样率、丢包率、20 ms 同步阈值和 500 ms 缓冲时长仍需现场验证。当前肩部已按 `DualImuArmEstimator` API 接入胸部/大臂四元数，Sleeve 只负责 CH2 肘部输入；可选 rotation estimator 复用同一对 IMU。真实 IMU 安装轴、Sensor→World 约定、方向映射和真实机械臂小范围联调仍未验证。

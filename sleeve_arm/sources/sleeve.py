@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections import deque
 from typing import Any, Callable
 
 from sleeve_arm.domain.sensor import SleeveFrame
@@ -36,6 +37,7 @@ class SerialSleeveSource(SleeveSource):
         self._serial: Any = None
         self._buffer = bytearray()
         self._latest: SleeveFrame | None = None
+        self._pending: deque[SleeveFrame] = deque()
         self._received = 0
         self._invalid = 0
         self._first_timestamp: float | None = None
@@ -73,6 +75,8 @@ class SerialSleeveSource(SleeveSource):
         except Exception as exc:
             raise RuntimeError(f"failed to open sleeve serial port {self.port}: {exc}") from exc
         self._buffer.clear()
+        with self._lock:
+            self._pending.clear()
         self._stop.clear()
         self._last_error = None
         self._thread = threading.Thread(target=self._run, name="sleeve-reader", daemon=False)
@@ -82,9 +86,19 @@ class SerialSleeveSource(SleeveSource):
         with self._lock:
             error = self._last_error
             frame = self._latest
+            self._pending.clear()
         if error is not None:
             raise RuntimeError(f"sleeve acquisition stopped: {error}") from error
         return frame
+
+    def drain(self) -> tuple[SleeveFrame, ...]:
+        with self._lock:
+            error = self._last_error
+            frames = tuple(self._pending)
+            self._pending.clear()
+        if error is not None and not frames:
+            raise RuntimeError(f"sleeve acquisition stopped: {error}") from error
+        return frames
 
     @property
     def stats(self) -> SourceStats:
@@ -111,6 +125,7 @@ class SerialSleeveSource(SleeveSource):
                 chunk = self._serial.read(max(1, min(waiting or 1, 8192)))
                 if not chunk:
                     continue
+                host_timestamp_ns = time.monotonic_ns()
                 self._buffer.extend(chunk)
                 if len(self._buffer) > 8192:
                     del self._buffer[:-8192]
@@ -130,11 +145,18 @@ class SerialSleeveSource(SleeveSource):
                         with self._lock:
                             self._invalid += 1
                         continue
-                    timestamp = time.monotonic()
+                    timestamp = host_timestamp_ns / 1_000_000_000.0
                     with self._lock:
                         self._received += 1
                         self._first_timestamp = self._first_timestamp or timestamp
-                        self._latest = SleeveFrame(timestamp, channels, self._received)
+                        frame = SleeveFrame(
+                            timestamp,
+                            channels,
+                            self._received,
+                            host_timestamp_ns,
+                        )
+                        self._latest = frame
+                        self._pending.append(frame)
         except BaseException as exc:
             if not self._stop.is_set():
                 with self._lock:

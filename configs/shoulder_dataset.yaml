@@ -1,0 +1,40 @@
+# Formal three-direction shoulder quaternion dataset collection.
+# flex.channels uses zero-based indices into the complete raw sleeve frame.
+sensor_config: sensors.yaml
+
+flex:
+  # Experimenter-selected mapping; preserve this order as sensor_1/2/3.
+  channels: [2, 4, 7]
+  interpolation: linear
+
+# Verify these physical placements before a real session.
+imu_roles:
+  torso_imu: imu2
+  upper_arm_imu: imu1
+
+collection:
+  output_hz: 60
+  status_hz: 1
+  flush_interval_s: 1
+  poll_interval_ms: 2
+
+sync:
+  max_skew_ms: 20
+  buffer_duration_ms: 1000
+  alignment_delay_ms: 50
+
+calibration:
+  neutral_duration_s: 3
+  countdown_s: 3
+  startup_timeout_s: 10
+
+body_frame:
+  forward_axis: [1, 0, 0]
+  lateral_axis: [0, 1, 0]
+  up_axis: [0, 0, 1]
+  upper_arm_axis_neutral: [0, 0, -1]
+  side: right
+
+label:
+  min_amplitude_deg: 5
+  max_direction_error_deg: 30

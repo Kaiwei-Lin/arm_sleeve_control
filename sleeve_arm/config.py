@@ -423,14 +423,16 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
     with config_path.open("r", encoding="utf-8") as stream:
         raw = yaml.safe_load(stream)
     predictor = raw.get("predictor") if isinstance(raw, dict) else None
-    angle = predictor.get("angle") if isinstance(predictor, dict) else None
     validation = raw.get("phase4_validation") if isinstance(raw, dict) else None
-    if not all(isinstance(item, dict) for item in (predictor, angle, validation)):
-        raise ValueError("phase4 config requires predictor.angle and phase4_validation mappings")
+    if not all(isinstance(item, dict) for item in (predictor, validation)):
+        raise ValueError("phase4 config requires predictor and phase4_validation mappings")
 
     backend = str(predictor.get("backend", ""))
     flex_model = None
     if backend == "flexarm_estimator":
+        angle = predictor.get("angle")
+        if not isinstance(angle, dict):
+            raise ValueError("flexarm_estimator requires a predictor.angle mapping")
         channels_raw = predictor.get("sleeve_channels")
         if not isinstance(channels_raw, list) or tuple(int(value) for value in channels_raw) != (3, 4, 5):
             raise ValueError("FlexArmEstimator sleeve_channels must be exactly [3, 4, 5]")
@@ -465,8 +467,8 @@ def load_phase4_config(path: str | Path = DEFAULT_PHASE4_CONFIG_PATH) -> Phase4C
         flex_model=flex_model,
         max_consecutive_prediction_errors=int(validation.get("max_consecutive_prediction_errors", 3)),
     )
-    if config.predictor_backend not in ("flexarm_estimator", "rule_based"):
-        raise ValueError("predictor.backend must be flexarm_estimator or rule_based")
+    if config.predictor_backend not in ("dual_imu", "flexarm_estimator", "rule_based"):
+        raise ValueError("predictor.backend must be dual_imu, flexarm_estimator, or rule_based")
     if flex_model is not None:
         if not math.isfinite(flex_model.calibration_seconds) or flex_model.calibration_seconds <= 0:
             raise ValueError("predictor.calibration_seconds must be positive and finite")

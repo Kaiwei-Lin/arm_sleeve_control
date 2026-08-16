@@ -26,7 +26,8 @@ class Imu770Parser:
             ck2 = (ck2 + ck1) & 0xFF
         return ck1, ck2
 
-    def feed(self, data: bytes) -> list[ImuFrame]:
+    def feed(self, data: bytes, host_timestamp_ns: int | None = None) -> list[ImuFrame]:
+        arrival_ns = time.monotonic_ns() if host_timestamp_ns is None else int(host_timestamp_ns)
         self._buffer.extend(data)
         frames: list[ImuFrame] = []
         while True:
@@ -51,7 +52,11 @@ class Imu770Parser:
                 continue
             del self._buffer[:length]
             try:
-                frame = self._parse_message(struct.unpack_from("<H", raw, 2)[0], raw[5:-2])
+                frame = self._parse_message(
+                    struct.unpack_from("<H", raw, 2)[0],
+                    raw[5:-2],
+                    arrival_ns,
+                )
             except ValueError:
                 self.invalid_frames += 1
                 continue
@@ -59,7 +64,12 @@ class Imu770Parser:
                 frames.append(frame)
         return frames
 
-    def _parse_message(self, tid: int, message: bytes) -> ImuFrame | None:
+    def _parse_message(
+        self,
+        tid: int,
+        message: bytes,
+        host_timestamp_ns: int,
+    ) -> ImuFrame | None:
         if not 1 <= tid <= 60000:
             raise ValueError("invalid TID")
         fields: dict[int, tuple[float, ...] | int] = {}
@@ -88,8 +98,9 @@ class Imu770Parser:
         quat_values = quat if isinstance(quat, tuple) else (None, None, None, None)
         device_timestamp = fields.get(0x51)
         return ImuFrame(
-            time.monotonic(), *accel, *gyro, *quat_values, tid,
+            host_timestamp_ns / 1_000_000_000.0, *accel, *gyro, *quat_values, tid,
             device_timestamp if isinstance(device_timestamp, int) else None,
+            host_timestamp_ns,
         )
 
 
@@ -104,6 +115,7 @@ class Imu770SerialSource(ImuSource):
         self._serial: Any = None
         self._parser = Imu770Parser()
         self._latest: ImuFrame | None = None
+        self._pending: deque[ImuFrame] = deque()
         self._received = 0
         self._first_timestamp: float | None = None
         self._last_error: BaseException | None = None
@@ -130,6 +142,8 @@ class Imu770SerialSource(ImuSource):
         except Exception as exc:
             raise RuntimeError(f"failed to open IMU770 serial port {self.port}: {exc}") from exc
         self._parser = Imu770Parser()
+        with self._lock:
+            self._pending.clear()
         self._stop.clear()
         self._last_error = None
         self._thread = threading.Thread(target=self._run, name=f"imu770-reader-{self.port}", daemon=False)
@@ -138,9 +152,19 @@ class Imu770SerialSource(ImuSource):
     def latest(self) -> ImuFrame | None:
         with self._lock:
             error, frame = self._last_error, self._latest
+            self._pending.clear()
         if error is not None:
             raise RuntimeError(f"IMU770 acquisition stopped: {error}") from error
         return frame
+
+    def drain(self) -> tuple[ImuFrame, ...]:
+        with self._lock:
+            error = self._last_error
+            frames = tuple(self._pending)
+            self._pending.clear()
+        if error is not None and not frames:
+            raise RuntimeError(f"IMU770 acquisition stopped: {error}") from error
+        return frames
 
     @property
     def stats(self) -> SourceStats:
@@ -166,11 +190,13 @@ class Imu770SerialSource(ImuSource):
                 chunk = self._serial.read(max(1, min(waiting or 1, 4096)))
                 if not chunk:
                     continue
-                for frame in self._parser.feed(chunk):
+                host_timestamp_ns = time.monotonic_ns()
+                for frame in self._parser.feed(chunk, host_timestamp_ns):
                     with self._lock:
                         self._received += 1
                         self._first_timestamp = self._first_timestamp or frame.timestamp
                         self._latest = frame
+                        self._pending.append(frame)
         except BaseException as exc:
             if not self._stop.is_set():
                 with self._lock:
