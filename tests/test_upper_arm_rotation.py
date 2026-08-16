@@ -91,51 +91,72 @@ def test_sync_gap_is_rejected() -> None:
     assert estimator.sync_rejected_count == 1
 
 
-def write_sensor_config(tmp_path, *, enabled: bool, imu1_enabled: bool, imu2_enabled: bool):
+def write_sensor_config(tmp_path, *, enabled: bool, imu3_enabled: bool, imu4_enabled: bool):
     raw = yaml.safe_load(DEFAULT_SENSOR_CONFIG_PATH.read_text(encoding="utf-8"))
     raw["upper_arm_rotation"]["enabled"] = enabled
-    raw["sensors"]["imu1"]["enabled"] = imu1_enabled
-    raw["sensors"]["imu2"]["enabled"] = imu2_enabled
+    raw["sensors"]["imu3"]["enabled"] = imu3_enabled
+    raw["sensors"]["imu4"]["enabled"] = imu4_enabled
     path = tmp_path / "sensors.yaml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     return path
 
 
-def test_optional_rotation_disabled_needs_no_imus(tmp_path) -> None:
+def test_optional_rotation_disabled_needs_no_rotation_imus(tmp_path) -> None:
     config = load_sensor_config(write_sensor_config(
-        tmp_path, enabled=False, imu1_enabled=False, imu2_enabled=False
+        tmp_path, enabled=False, imu3_enabled=False, imu4_enabled=False
     ))
     assert not config.upper_arm_rotation.enabled
     assert config.upper_arm_rotation.max_sync_ms is None
+    assert (config.shoulder_imu.arm_imu, config.shoulder_imu.chest_imu) == ("imu1", "imu2")
 
 
 def test_enabled_rotation_accepts_two_enabled_role_sources(tmp_path) -> None:
     config = load_sensor_config(write_sensor_config(
-        tmp_path, enabled=True, imu1_enabled=True, imu2_enabled=True
+        tmp_path, enabled=True, imu3_enabled=True, imu4_enabled=True
     ))
-    assert config.upper_arm_rotation.upper_imu == "imu1"
-    assert config.upper_arm_rotation.reference_imu == "imu2"
+    assert config.upper_arm_rotation.upper_imu == "imu3"
+    assert config.upper_arm_rotation.reference_imu == "imu4"
+    assert config.imu3.enabled and config.imu4.enabled
 
 
-@pytest.mark.parametrize(("imu1_enabled", "imu2_enabled"), ((False, True), (True, False)))
+@pytest.mark.parametrize(("imu3_enabled", "imu4_enabled"), ((False, True), (True, False)))
 def test_enabled_rotation_requires_both_role_sources(
-    tmp_path, imu1_enabled: bool, imu2_enabled: bool
+    tmp_path, imu3_enabled: bool, imu4_enabled: bool
 ) -> None:
     with pytest.raises(ValueError, match="requires both upper_imu and reference_imu"):
         load_sensor_config(write_sensor_config(
             tmp_path,
             enabled=True,
-            imu1_enabled=imu1_enabled,
-            imu2_enabled=imu2_enabled,
+            imu3_enabled=imu3_enabled,
+            imu4_enabled=imu4_enabled,
         ))
 
 
 def test_rotation_config_rejects_invalid_ema(tmp_path) -> None:
-    path = write_sensor_config(tmp_path, enabled=False, imu1_enabled=False, imu2_enabled=False)
+    path = write_sensor_config(tmp_path, enabled=False, imu3_enabled=False, imu4_enabled=False)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     raw["upper_arm_rotation"]["ema_alpha"] = 0.0
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="ema_alpha"):
+        load_sensor_config(path)
+
+
+def test_shoulder_and_rotation_roles_cannot_overlap(tmp_path) -> None:
+    path = write_sensor_config(tmp_path, enabled=True, imu3_enabled=True, imu4_enabled=True)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["upper_arm_rotation"]["upper_imu"] = "imu1"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="disjoint"):
+        load_sensor_config(path)
+
+
+@pytest.mark.parametrize("name", ("imu1", "imu2"))
+def test_shoulder_requires_both_role_sources(tmp_path, name: str) -> None:
+    path = write_sensor_config(tmp_path, enabled=False, imu3_enabled=False, imu4_enabled=False)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["sensors"][name]["enabled"] = False
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="shoulder_imu requires both"):
         load_sensor_config(path)
 
 

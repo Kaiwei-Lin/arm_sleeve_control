@@ -8,13 +8,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sleeve_arm.config import DEFAULT_SENSOR_CONFIG_PATH, load_sensor_config
+from sleeve_arm.config import DEFAULT_SENSOR_CONFIG_PATH, IMU_NAMES, load_sensor_config
 from sleeve_arm.sources import FakeImuSource, create_imu_source
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read one optional IMU without connecting the robot.")
-    parser.add_argument("--imu", required=True, choices=("imu1", "imu2"))
+    parser.add_argument("--imu", required=True, choices=IMU_NAMES)
     parser.add_argument("--fake", action="store_true")
     parser.add_argument("--config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
     args = parser.parse_args()

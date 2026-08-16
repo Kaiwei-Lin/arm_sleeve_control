@@ -24,19 +24,40 @@ sensors:
     baudrate: 460800
     timeout_s: 0.1
 
+  # Configure these two machine-specific ports before real rotation control.
+  imu3:
+    enabled: true
+    backend: imu770_serial
+    port: null
+    baudrate: 460800
+    timeout_s: 0.1
+
+  imu4:
+    enabled: true
+    backend: imu770_serial
+    port: null
+    baudrate: 460800
+    timeout_s: 0.1
+
+# DualImuArmEstimator inputs. IMU1 is on the right upper arm; IMU2 is on the chest.
+shoulder_imu:
+  arm_imu: imu1
+  chest_imu: imu2
+  max_sync_ms: null
+  calibration_seconds: 2.0
+  startup_timeout_s: 10.0
+
 # Optional dual-IMU upper-arm rotation. Enable only after both IMU endpoints
 # and the calibrated ID24 robot limits are ready.
 upper_arm_rotation:
   enabled: true
-  upper_imu: imu1
-  reference_imu: imu2
+  upper_imu: imu3
+  reference_imu: imu4
   # Parser order is [w,x,y,z]; interpreted as Sensor->World per the reference demo.
   twist_axis: x
   ema_alpha: 0.35
-  # null: shoulder control falls back to synchronization.max_time_delta_ms.
-  # A positive value overrides that threshold for shoulder and twist estimation.
+  # null: fall back to synchronization.max_time_delta_ms.
   max_sync_ms: null
-  # Shared neutral-pose timing for shoulder and optional twist calibration.
   calibration_seconds: 2.0
   startup_timeout_s: 10.0
 

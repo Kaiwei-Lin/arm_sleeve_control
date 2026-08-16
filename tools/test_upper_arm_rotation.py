@@ -44,7 +44,12 @@ def main() -> int:
             sources[name] = source
             source.start()
 
-        estimator = UpperArmRotationEstimator(config.ema_alpha, config.max_sync_ms, config.twist_axis)
+        max_sync_ms = (
+            sensor_config.synchronization.max_time_delta_ms
+            if config.max_sync_ms is None
+            else config.max_sync_ms
+        )
+        estimator = UpperArmRotationEstimator(config.ema_alpha, max_sync_ms, config.twist_axis)
 
         def synchronizer() -> SensorSynchronizer:
             return SensorSynchronizer(
@@ -59,16 +64,15 @@ def main() -> int:
 
         def next_pair():
             nonlocal last_pair
-            for name, source in sources.items():
+            for source, add in zip(sources.values(), (sync.add_imu1, sync.add_imu2)):
                 frame = source.latest()
                 if frame is None:
                     return None
-                (sync.add_imu1 if name == "imu1" else sync.add_imu2)(frame)
-            pair = sync.latest_imu_pair(config.max_sync_ms)
+                add(frame)
+            pair = sync.latest_imu_pair(max_sync_ms)
             if pair is None:
                 return None
-            frames = {"imu1": pair[0], "imu2": pair[1]}
-            upper, reference = frames[config.upper_imu], frames[config.reference_imu]
+            upper, reference = pair
             identity = (upper.timestamp, reference.timestamp)
             if identity == last_pair:
                 return None
