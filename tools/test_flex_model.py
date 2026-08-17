@@ -6,7 +6,9 @@ import csv
 import math
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -48,10 +50,38 @@ def replay(path: Path, predictor: FlexModelPredictor) -> int:
     return 0 if count else 1
 
 
+def run_live(
+    source: Any,
+    predictor: FlexModelPredictor,
+    print_interval_s: float,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    print_fn: Callable[[FlexModelPredictor, Any], None] = print_prediction,
+) -> None:
+    last_timestamp = None
+    last_print = float("-inf")
+    while True:
+        frame = source.latest()
+        if frame is not None and frame.timestamp != last_timestamp:
+            intent = predictor.predict(SensorSample(frame.timestamp, frame))
+            last_timestamp = frame.timestamp
+            now = monotonic()
+            if now - last_print >= print_interval_s:
+                print_fn(predictor, intent)
+                last_print = now
+        sleep(0.001)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run FlexArmEstimator without connecting any robot.")
     parser.add_argument("--input", type=Path, help="Phase 2 samples.csv; skips serial Sleeve")
-    parser.add_argument("--refresh", type=float, default=0.5)
+    parser.add_argument(
+        "--refresh",
+        type=float,
+        default=0.1,
+        help="print interval in seconds; inference still consumes every fresh frame",
+    )
     parser.add_argument("--sensor-config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
     parser.add_argument("--phase4-config", type=Path, default=DEFAULT_PHASE4_CONFIG_PATH)
     parser.add_argument("--reuse-calibration", action="store_true")
@@ -88,13 +118,7 @@ def main() -> int:
             calibration_seconds=args.calibration_seconds,
             calibration_output=args.calibration_output,
         )
-        last_timestamp = None
-        while True:
-            frame = source.latest()
-            if frame is not None and frame.timestamp != last_timestamp:
-                print_prediction(predictor, predictor.predict(SensorSample(frame.timestamp, frame)))
-                last_timestamp = frame.timestamp
-            time.sleep(args.refresh)
+        run_live(source, predictor, args.refresh)
     except KeyboardInterrupt:
         print("\nStopping model test...")
         return 0

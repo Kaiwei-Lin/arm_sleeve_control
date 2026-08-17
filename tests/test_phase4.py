@@ -34,7 +34,7 @@ from sleeve_arm.sync import SensorSynchronizer
 from tools.debug_model_mapping import manual_intent
 from tools import run_manual_model_control, run_model_control
 from tools.run_model_control import _add_latest_pair, prepare_flexarm_predictor
-from tools.test_flex_model import replay
+from tools.test_flex_model import replay, run_live
 
 
 def model_config(**changes) -> FlexModelConfig:
@@ -297,6 +297,44 @@ def test_prepare_predictor_reuses_only_when_explicit(tmp_path: Path) -> None:
     assert prepared is predictor
     assert predictor.reused_path == path
     assert predictor.calibration_rows is None
+
+
+def test_live_flex_test_infers_every_frame_without_print_throttling() -> None:
+    frames = [
+        SleeveFrame(float(index), (10, 20, 30 + index, 40 + index, 50 + index))
+        for index in (1, 2, 3)
+    ]
+    estimator = FakeEstimator([
+        EstimatorResult("Rest", 0.0, 1.0, 1.0, False),
+        EstimatorResult("Rest", 0.0, 1.0, 1.0, False),
+        EstimatorResult("Rest", 0.0, 1.0, 1.0, False),
+    ])
+    predictor = FlexModelPredictor(model_config(), estimator=estimator)
+    printed: list[float] = []
+    sleep_count = 0
+
+    def stop_after_three_frames(_seconds: float) -> None:
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count == 3:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_live(
+            SequenceSleeveSource(frames),
+            predictor,
+            0.5,
+            monotonic=SequenceClock([0.0, 0.01, 0.02]),
+            sleep=stop_after_three_frames,
+            print_fn=lambda _predictor, intent: printed.append(intent.timestamp),
+        )
+
+    assert [call["timestamp_ns"] for call in estimator.calls] == [
+        1_000_000_000,
+        2_000_000_000,
+        3_000_000_000,
+    ]
+    assert printed == [1.0]
 
 
 @dataclass
