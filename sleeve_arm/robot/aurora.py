@@ -12,6 +12,7 @@ from sleeve_arm.robot.base import RobotArm, RobotError
 
 class AuroraRobotArm(RobotArm):
     strict_limits = True
+    disable_operation_name = "application disable"
 
     def __init__(self, session: AuroraSession, *, sides, parts=("arm",)):
         self.session = session
@@ -32,6 +33,8 @@ class AuroraRobotArm(RobotArm):
         self._states = None
         self._targets: dict[str, list[float]] = {}
         self._last_times: dict[str, float] = {}
+        self._command_versions = {}
+        self._submitted_at = {}
 
     def _require(self, *, enabled=False):
         if self.fault:
@@ -45,6 +48,7 @@ class AuroraRobotArm(RobotArm):
     def _latch(self, exc):
         self.fault = self.fault or str(exc)
         self.enabled = False
+        self.session.disable(self._token, fault=True)
 
     def connect(self):
         if self.connected or self.fault:
@@ -59,10 +63,10 @@ class AuroraRobotArm(RobotArm):
         try:
             self.read_joint_states()
             self.session.enable(self._token)
-            # Re-read after the authority round trip before establishing initial targets.
+            # Re-read after the FSM/application gate before establishing initial targets.
             self.read_joint_states()
-            entries = {g.group_name: g for g in self._snapshot.groups.joint_state}
-            self._targets = {g.name: list(entries[g.name].joint_position) for g in self.groups}
+            entries = self._snapshot.groups
+            self._targets = {g.name: list(entries[g.name].position) for g in self.groups}
             now = self.session.clock.monotonic()
             self._last_times = {g.name: now for g in self.groups}
             self.enabled = True
@@ -80,33 +84,26 @@ class AuroraRobotArm(RobotArm):
         if any(name not in self._joints for name in names):
             raise RobotError("unknown joint")
         try:
-            snapshot = self.session.snapshot(controlling=self.enabled)
-            entries = {}
-            for entry in snapshot.groups.joint_state:
-                if entry.group_name in entries:
-                    raise RobotError("duplicate control group feedback")
-                entries[entry.group_name] = entry
+            reader = self.session.snapshot if self.enabled else self.session.fresh_snapshot
+            snapshot = reader({g.name for g in self.groups})
+            if self.enabled:
+                self.session._check_fsm()
+            entries = snapshot.groups
             states = {}
             for group in self.groups:
-                entry = entries.get(group.name)
-                if entry is None:
-                    raise RobotError(f"missing feedback group {group.name}")
-                if group.count is None or len(entry.joint_position) != group.count:
-                    raise RobotError(f"{group.name}: feedback dimension mismatch/unverified count")
-                for field in ("joint_position", "joint_velocity", "joint_effort"):
-                    values = getattr(entry, field)
-                    if len(values) != group.count:
-                        raise RobotError(f"{group.name}: {field} dimension mismatch")
-                    if not all(math.isfinite(v) for v in values):
-                        raise RobotError(f"{group.name}: non-finite {field} feedback")
+                entry = entries[group.name]
+                group.check_vector(entry.position)
+                if self.enabled and any(abs(a - b) > group.max_tracking_error
+                                        for a, b in zip(entry.position, self._targets[group.name])):
+                    raise RobotError(f"{group.name}: full group tracking error exceeds limit")
             for key, (group, joint) in self._joints.items():
                 entry = entries[group.name]
                 state = JointState(
-                    name=key, position=joint.from_sdk(entry.joint_position[joint.index]),
-                    velocity=joint.sign * entry.joint_velocity[joint.index],
-                    torque=joint.sign * entry.joint_effort[joint.index],
+                    name=key, position=joint.from_sdk(entry.position[joint.index]),
+                    velocity=joint.sign * entry.velocity[joint.index] if entry.velocity else None,
+                    torque=joint.sign * entry.effort[joint.index] if entry.effort else None,
                     current=None, state=None, bus=None, error=None,
-                    received_at=snapshot.received_at,
+                    received_at=entry.observed_at,
                 )
                 expected = (joint.from_sdk(self._targets[group.name][joint.index])
                             if self.enabled else None)
@@ -171,6 +168,8 @@ class AuroraRobotArm(RobotArm):
                     if change > limit.max_position_step + 1e-10 or change > limit.max_velocity * dt + 1e-10:
                         raise RobotError(f"{joint.name}: target step/velocity exceeds limit")
             self.session.publish(self._token, updated, self._snapshot)
+            self._command_versions.update({name: self._snapshot.groups[name].revision for name in updated})
+            self._submitted_at.update({name: self.session.clock.monotonic() for name in updated})
             self._targets.update(updated)
             for name in updated:
                 self._last_times[name] = now
@@ -203,3 +202,33 @@ class AuroraRobotArm(RobotArm):
         if group.part != part or capability not in group.capabilities:
             raise ValueError(f"missing {part}/{capability} capability")
         return key
+
+    def read_group_positions(self, side):
+        """Complete SDK-coordinate vector, copied from one cached group sample."""
+        self._require()
+        groups = [g for g in self.groups if g.side == side and g.part == "arm"]
+        if len(groups) != 1:
+            raise ValueError("unbound or unsupported arm side")
+        try:
+            snapshot = self.session.snapshot({groups[0].name})
+            return list(snapshot.groups[groups[0].name].position)
+        except BaseException as exc:
+            self._latch(exc)
+            raise
+
+    def arrival_feedback_is_new(self, targets):
+        for key in targets:
+            name = self._joints[key][0].name
+            sample = self._snapshot.groups[name]
+            if (sample.revision <= self._command_versions.get(name, -1) or sample.observed_at is None
+                    or sample.observed_at < self._submitted_at.get(name, float('inf'))):
+                return False
+        return True
+
+    def set_hand_joint(self, side, joint, position):
+        self.set_hand_joints(side, {joint: position})
+
+    def set_hand_joints(self, side, targets):
+        mapped = {self.joint_key(side, name, capability="hand_joints", part="hand"): value
+                  for name, value in targets.items()}
+        self.set_joint_positions(mapped)

@@ -1,354 +1,305 @@
-"""SDK 1.0.1 adapter and single-owner, reference-counted Aurora session.
+"""Pinned 0.1.8 SDK adapter and shared process-client lifecycle.
 
-No import, DDS startup, lease, or FSM operation happens at module import time.
+Only public client calls are used. A read-only check of _instance prevents
+adopting an externally initialized SDK singleton; it is never changed/reset.
 """
 from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
 
-from sleeve_arm.robot.aurora_profile import AuroraRobotProfile, SDK_VERSION
+from sleeve_arm.robot.aurora_profile import SDK_VERSION
 from sleeve_arm.robot.base import RobotError
 
 
 class SystemClock:
     monotonic = staticmethod(time.monotonic)
     sleep = staticmethod(time.sleep)
-    time = staticmethod(time.time)
 
 
 @dataclass(frozen=True)
-class AuroraSnapshot:
-    aurora: Any
-    groups: Any
-    received_at: float
-    age_s: float
+class GroupSnapshot:
+    position: tuple
+    velocity: tuple
+    effort: tuple
+    observed_at: float | None
+    read_at: float
+    revision: int
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    fsm: int
+    groups: dict[str, GroupSnapshot]
+    read_at: float
+
+
+class _SdkErrors(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.ERROR)
+        self.event = threading.Event()
+        self.message = ''
+
+    def emit(self, record):
+        # SDK background callbacks/loggers only set a flag. No SDK operations.
+        self.message = record.getMessage()
+        self.event.set()
 
 
 class AuroraSession:
+    _process_session = None
     _registry_lock = threading.RLock()
-    _real_session: AuroraSession | None = None
+
+    def __init__(self, profile, *, execute=False, operator_confirmed=False,
+                 sdk=None, clock=None, simulation=False):
+        profile.validate()
+        self.profile = profile
+        self.execute = bool(execute)
+        self.operator_confirmed = bool(operator_confirmed)
+        self.simulation = simulation
+        self.sdk = sdk
+        self.clock = clock or SystemClock()
+        self.client = None
+        self.closed = False
+        self.fault = None
+        self._refs = {}
+        self._enabled = set()
+        self._blocked_groups = set()
+        self._owner_thread = None
+        self._cache = {}
+        self._lock = threading.RLock()
+        self._errors = _SdkErrors()
+        self._loggers = []
 
     @classmethod
-    def real(cls, profile: AuroraRobotProfile, *, execute: bool = False,
-             operator_confirmed: bool = False) -> AuroraSession:
-        """Reuse the process singleton only for identical, explicitly authorized settings."""
-        profile.validate(execute=execute)
-        if execute and operator_confirmed is not True:
-            raise RobotError("real execute requires explicit operator confirmation")
+    def real(cls, profile, *, execute=False, operator_confirmed=False):
         with cls._registry_lock:
-            old = cls._real_session
-            if old is not None and not old.closed:
-                if old.profile != profile or old.execute != execute:
-                    raise RobotError("conflicting Aurora singleton configuration; close all existing views first")
-                return old
-            session = cls(profile, execute=execute, operator_confirmed=operator_confirmed)
-            cls._real_session = session
-            return session
-
-    def __init__(self, profile: AuroraRobotProfile, *, execute: bool = False,
-                 operator_confirmed: bool = False, sdk=None, client=None,
-                 sdk_version: str | None = None, clock=None, simulation: bool = False):
-        profile.validate(execute=execute, simulation=simulation)
-        if execute and operator_confirmed is not True:
-            raise RobotError("execute requires explicit operator confirmation")
-        if simulation and (sdk is None or client is None):
-            raise RobotError("simulation requires an injected SDK and client")
-        if sdk_version is not None and sdk_version != SDK_VERSION:
-            raise RobotError(f"unsupported SDK version {sdk_version}; require {SDK_VERSION}; no fallback")
-        self.profile = profile
-        self.execute = execute
-        self.clock = clock or SystemClock()
-        self.sdk = sdk
-        self.client = client
-        self.started = False
-        self.closed = False
-        self.fault: str | None = None
-        self._owner_thread: int | None = None
-        self._views: dict[object, set[str]] = {}
-        self._active: dict[object, set[str]] = {}
-        self._lease_attempted = False
-        self._lease_lost = threading.Event()
-        self._timestamps: dict[str, tuple[float, float]] = {}
-        self._lock = threading.RLock()
-        self._endpoints: list[str] = []
-
-    def _fail(self, message: str):
-        self.fault = self.fault or message
-        raise RobotError(message)
+            existing = cls._process_session
+            if existing is not None:
+                if existing.closed or existing.fault:
+                    raise RobotError('0.1.8 singleton closed/faulted; restart process before reconfirming')
+                if (existing.profile != profile or existing.execute != execute
+                        or existing.operator_confirmed != operator_confirmed):
+                    raise RobotError('conflicting Aurora process configuration/authorization')
+                return existing
+            result = cls(profile, execute=execute, operator_confirmed=operator_confirmed)
+            cls._process_session = result
+            return result
 
     def _check_fault(self):
-        if self._lease_lost.is_set():
-            self._fail("lease lost (callback); explicit close/reconfirmation required")
-        if self.fault:
-            raise RobotError(f"Aurora session fault latched: {self.fault}")
-        if self.closed:
-            raise RobotError("Aurora session is closed; create a new explicitly confirmed session")
+        if self._errors.event.is_set():
+            self.fault = self.fault or f'SDK error log: {self._errors.message}'
+        if self.closed or self.fault:
+            raise RobotError(f'Aurora session closed/fault latched: {self.fault}; reconstruct/reconfirm in a new process')
 
-    def _owner(self):
-        if self._owner_thread != threading.get_ident():
-            self._fail("only the session command owner thread may change control state")
-
-    def _call(self, name, *args):
-        try:
-            return getattr(self.client, name)(*args)
-        except Exception as exc:
-            self._fail(f"{name}: SDK exception {type(exc).__name__}: {exc}")
-
-    def _operation(self, name, result):
-        if result.success() is not True:
-            self._fail(f"{name}: code={result.code} message={result.message}")
-
-    def _void(self, name, *args):
-        result = self._call(name, *args)
-        if result is not None:
-            self._fail(f"{name}: incompatible SDK return contract (expected None)")
-
-    def _lease(self, name, resources=None, *, usable=True):
-        result = self._call(name, resources) if resources is not None else self._call(name)
-        self._operation(name, result.operation)
-        if usable and result.usable() is not True:
-            self._fail(f"{name}: lease unusable; code={result.operation.code} message={result.operation.message}")
-        if usable and resources is not None and set(result.resources) != set(resources):
-            self._fail(f"{name}: granted resource set differs from request")
-        return result
-
-    def _on_lease_changed(self, result):
-        # SDK callback thread: only set a thread-safe latch. Never stop/release here.
-        if result.state == self.sdk.LeaseState.LOST:
-            self._lease_lost.set()
-
-    def attach(self, token: object, groups: set[str]):
-        with self._lock:
-            self._check_fault()
-            if token in self._views:
-                raise RobotError("view already connected")
-            if any(groups & owned for owned in self._views.values()):
-                raise RobotError("control group already belongs to another session view")
-            if not self.started:
-                self._start()
-            self._owner()
-            self._views[token] = set(groups)
-
-    def _start(self):
-        self._owner_thread = threading.get_ident()
+    def _load_sdk(self):
         if self.sdk is None:
             try:
-                version = importlib.metadata.version("fourier-aurora-client")
+                version = importlib.metadata.version('fourier_aurora_client')
             except importlib.metadata.PackageNotFoundError as exc:
-                raise RobotError("Aurora SDK missing: install the platform's official fourier_aurora_client-1.0.1 wheel "
-                                 "and matching DDS runtimes; see docs/aurora_control.md (no automatic installation)") from exc
+                raise RobotError('Aurora SDK missing: python -m pip install -r requirements-aurora.txt; no automatic installation') from exc
             if version != SDK_VERSION:
-                raise RobotError(f"unsupported SDK version {version}; require {SDK_VERSION}; no legacy fallback")
-            try:
-                self.sdk = importlib.import_module("fourier_aurora_client")
-            except (ImportError, OSError) as exc:
-                raise RobotError(f"Aurora SDK/runtime import failed: {exc}; see docs/aurora_control.md") from exc
-        if self.client is None:
-            self.client = self.sdk.AuroraClient.get_instance()
-        if self._call("state") != self.sdk.ClientState.STOPPED:
-            raise RobotError("Aurora singleton already running outside this session; refusing to reconfigure/stop it")
-        self._endpoints = ["AURORA_STATE_SUBSCRIBER", "CONTROL_GROUP_STATE_SUBSCRIBER"]
-        if self.execute:
-            self._endpoints += ["ERROR_CODES_SUBSCRIBER", "MANAGE_LEASE_SERVICE", "CONTROL_GROUP_COMMAND_PUBLISHER"]
-        options = self.sdk.ConnectionOptions()
-        for name, value in self.profile.connection.items():
-            setattr(options, name, value)
-        options.enabled_endpoints = [getattr(self.sdk.Endpoint, name) for name in self._endpoints]
-        options.allow_emergency_lease_priority = False
+                raise RobotError(f'unsupported SDK version {version}; requires 0.1.8; no automatic fallback')
+            self.sdk = importlib.import_module('fourier_aurora_client')
+        client_class = self.sdk.AuroraClient
+        required = ('get_instance', 'get_fsm_state', 'get_group_state', 'set_group_cmd', 'close')
+        if not all(callable(getattr(client_class, name, None)) for name in required):
+            raise RobotError('incompatible 0.1.8 API surface')
+        if any(hasattr(client_class, name) for name in ('configure', 'start', 'register_lease')):
+            raise RobotError('mixed/new API family rejected')
+        return client_class
+
+    def _call(self, method, *args, **kwargs):
+        self._check_fault()
         try:
-            self._void("configure", options)
-            if self.execute:
-                self._void("on_lease_changed", self._on_lease_changed)
-            self._void("start")
-            self.started = True
-            if self._call("wait_for_endpoints", self.profile.endpoint_timeout_s) is not True:
-                self._fail("wait_for_endpoints: required DDS endpoints did not match")
-        except BaseException:
-            try:
-                self._void("stop")
-            finally:
-                self.started = False
-                self.closed = True
-            raise
-
-    def _endpoints_ready(self):
-        status = self._call("endpoint_match_status")
-        for name in self._endpoints:
-            entry = getattr(status, name.lower())
-            if not entry.enabled or not entry.matched:
-                self._fail(f"endpoint_match_status: required {name} disabled/unmatched")
-
-    def _read(self, operation):
-        result, value = self._call(operation)
-        self._operation(operation, result)
+            value = getattr(self.client, method)(*args, **kwargs)
+        except KeyError as exc:
+            raise RobotError(f'{method}: missing state/group: {exc}') from exc
+        except Exception as exc:
+            self.fault = f'{method}: {type(exc).__name__}: {exc}'
+            raise RobotError(self.fault) from exc
+        self._check_fault()
         return value
 
-    def _age(self, label, header):
-        if not isinstance(header.received_time, datetime):
-            self._fail(f"{label}: SDK received_time is missing/invalid")
-        stamp = header.received_time.timestamp()
-        now = self.clock.monotonic()
-        wall_age = self.clock.time() - stamp
-        if wall_age < -0.05:
-            self._fail(f"{label}: receive timestamp is in the future")
-        previous = self._timestamps.get(label)
-        if previous is not None and stamp < previous[0]:
-            self._fail(f"{label}: receive timestamp regressed")
-        if previous is None or stamp > previous[0]:
-            self._timestamps[label] = (stamp, now - max(0.0, wall_age))
-        received = self._timestamps[label][1]
-        age = max(now - received, wall_age)
-        if age > self.profile.feedback_timeout_s:
-            self._fail(f"{label}: stale feedback ({age:.3f}s)")
-        return received, age
-
-    def _health(self, *, controlling=False):
-        self._check_fault()
-        if not self.started:
-            raise RobotError("Aurora session not connected")
-        self._endpoints_ready()
-        aurora = self._read("get_aurora_state")
-        self._age("aurora_state", aurora.header)
-        if controlling or self._active:
-            for field in ("robot_type", "hardware_type", "end_effector_type"):
-                expected = getattr(self.profile, field)
-                if expected is not None and getattr(aurora.robot_info, field) != expected:
-                    self._fail(f"robot identity mismatch: {field}")
-            if aurora.current_state.id not in self.profile.allowed_fsm:
-                self._fail(f"FSM {aurora.current_state.id} not allowed; no automatic FSM switching")
-            errors = self._read("get_error_codes")
-            if errors.error_codes:
-                codes = [(e.high32, e.low32) for e in errors.error_codes]
-                self._fail(f"asynchronous Aurora errors (not per-motor status): {codes}")
-        if self._active:
-            lease = self._lease("get_lease")
-            if not set(self._resources(self._active_groups())) <= set(lease.resources):
-                self._fail("get_lease: active resources lost")
-        return aurora
-
-    def snapshot(self, *, controlling=False) -> AuroraSnapshot:
+    def attach(self, token, groups):
         with self._lock:
-            aurora = self._health(controlling=controlling)
-            groups = self._read("get_control_group_state")
-            received, age = self._age("control_group_state", groups.header)
-            return AuroraSnapshot(aurora, groups, received, age)
+            self._check_fault()
+            selected = tuple(g for g in self.profile.groups if g.name in groups)
+            if not groups or len(selected) != len(groups) or None in groups:
+                raise RobotError('explicit configured group names required; use SDK doctor for discovery')
+            if groups & self._blocked_groups:
+                raise RobotError('group fault latched; restart process and reconfirm')
+            if any(groups & other for other in self._refs.values()):
+                raise RobotError('group already belongs to another application view')
+            if self.profile.connection.get('domain_id') is None:
+                raise RobotError('domain_id is unverified')
+            if any(g.count is None for g in selected):
+                raise RobotError('group DOF is unverified')
+            if self.execute:
+                self.profile.validate(execute=True, simulation=self.simulation, groups=selected)
+            if self.client is None:
+                try:
+                    klass = self._load_sdk()
+                    if getattr(klass, '_instance', None) is not None:
+                        raise RobotError('external/stale Aurora singleton exists; restart with one owner')
+                    if not self.simulation:
+                        for name in ('fourier_aurora_client.client', 'fourier_aurora_client.dds_interface'):
+                            logger = logging.getLogger(name)
+                            logger.addHandler(self._errors)
+                            self._loggers.append(logger)
+                    self.client = klass.get_instance(**self.profile.connection)
+                    if self.client is None:
+                        raise RobotError('get_instance returned None: SDK initialization/discovery failed')
+                    self._check_fault()
+                except BaseException as exc:
+                    self.fault = str(exc)
+                    self._close_client()
+                    raise
+            self._refs[token] = set(groups)
+            try:
+                # First cache observation has unknown age. Require a replacement
+                # by an actual callback before accepting a group as fresh.
+                deadline = self.clock.monotonic() + self.profile.endpoint_timeout_s
+                while True:
+                    snapshot = self.snapshot(groups, require_fresh=False)
+                    if all(g.observed_at is not None for g in snapshot.groups.values()):
+                        self.check_snapshot(snapshot)
+                        break
+                    if self.clock.monotonic() >= deadline:
+                        raise RobotError('fresh feedback timeout: no new cache sample observed')
+                    self.clock.sleep(min(0.01, max(0, deadline - self.clock.monotonic())))
+            except BaseException:
+                self.detach(token)
+                raise
 
-    def _resources(self, names):
-        resources = {g.resource for g in self.profile.groups if g.name in names}
-        return [getattr(self.sdk.AuroraResource, r) for r in sorted(resources)]
+    def snapshot(self, names, *, require_fresh=True):
+        with self._lock:
+            fsm = self._call('get_fsm_state')
+            if type(fsm) is not int or fsm < 0:
+                raise RobotError('get_fsm_state returned invalid FSM')
+            groups = {}
+            for name in names:
+                raw = self._call('get_group_state', name, key='position')
+                if not isinstance(raw, list):
+                    raise RobotError('get_group_state(position) must return the 0.1.8 cached list')
+                now = self.clock.monotonic()
+                previous = self._cache.get(name)
+                observed, revision = None, 0
+                if previous:
+                    old, last_read, observed, revision = previous
+                    if raw is not old:
+                        # Callback occurred after previous observation. Use that
+                        # earlier time conservatively; never claim robot sample time.
+                        observed, revision = last_read, revision + 1
+                self._cache[name] = (raw, now, observed, revision)
+                # Position is copied once for ALL semantic joints in this group.
+                position = tuple(raw)
+                group = next(g for g in self.profile.groups if g.name == name)
+                group.check_vector(position)
+                velocity = tuple(self._call('get_group_state', name, key='velocity'))
+                effort = tuple(self._call('get_group_state', name, key='effort'))
+                for label, values in (('velocity', velocity), ('effort', effort)):
+                    if len(values) not in (0, group.count):
+                        raise RobotError(f'{name}: {label} vector dimension mismatch')
+                    from sleeve_arm.robot.aurora_profile import finite
+                    for v in values:
+                        finite(v, label)
+                groups[name] = GroupSnapshot(position, velocity, effort, observed, now, revision)
+            result = Snapshot(fsm, groups, self.clock.monotonic())
+            if require_fresh:
+                self.check_snapshot(result)
+            return result
 
-    def _active_groups(self):
-        return set().union(*self._active.values()) if self._active else set()
+    def fresh_snapshot(self, names):
+        """Reacquire two cache observations while application motion is disabled.
+
+        After operator confirmation or long calibration, one read cannot bound
+        the age of a replaced cache. Wait for a subsequent actual update.
+        """
+        deadline = self.clock.monotonic() + self.profile.endpoint_timeout_s
+        while True:
+            snapshot = self.snapshot(names, require_fresh=False)
+            now = self.clock.monotonic()
+            if all(g.observed_at is not None and 0 <= now - g.observed_at <= self.profile.feedback_timeout_s
+                   for g in snapshot.groups.values()):
+                return snapshot
+            if now >= deadline:
+                raise RobotError('fresh feedback timeout: cache did not update')
+            self.clock.sleep(min(0.01, max(0, deadline - now)))
+
+    def check_snapshot(self, snapshot):
+        self._check_fault()
+        now = self.clock.monotonic()
+        for name, value in snapshot.groups.items():
+            if value.observed_at is None or not 0 <= now - value.observed_at <= self.profile.feedback_timeout_s:
+                raise RobotError(f'{name}: stale/unknown-age cache feedback')
+
+    def _check_fsm(self):
+        fsm = self._call('get_fsm_state')
+        if type(fsm) is not int or fsm not in self.profile.allowed_fsm:
+            self.fault = f'FSM {fsm} is not in verified allowed_fsm'
+            raise RobotError(self.fault)
 
     def enable(self, token):
         with self._lock:
-            self._owner()
             self._check_fault()
-            if not self.execute:
-                raise RobotError("read-only session cannot enable; --execute and confirmation required")
-            self._health(controlling=True)
-            if token not in self._views:
-                raise RobotError("unconnected session view")
-            if token in self._active:
-                self._lease("get_lease")
-                return
-            resources = self._resources(self._active_groups() | self._views[token])
-            operation = "replace_lease" if self._active else "register_lease"
-            self._lease_attempted = True
-            self._lease(operation, resources)
-            self._check_fault()
-            self._active[token] = self._views[token]
+            if token not in self._refs:
+                raise RobotError('view not connected')
+            if not self.execute or not self.operator_confirmed:
+                raise RobotError('read-only: execute and explicit operator confirmation required')
+            groups = [g for g in self.profile.groups if g.name in self._refs[token]]
+            self.profile.validate(execute=True, simulation=self.simulation, groups=groups)
+            if self._owner_thread is not None and self._owner_thread != threading.get_ident():
+                raise RobotError('only one command owner thread is allowed')
+            self._check_fsm()
+            self._owner_thread = threading.get_ident()
+            self._enabled.add(token)
 
-    def publish(self, token, positions: dict[str, list[float]], snapshot: AuroraSnapshot):
+    def publish(self, token, vectors, snapshot):
         with self._lock:
-            self._owner()
             self._check_fault()
-            if token not in self._active or not positions or not set(positions) <= self._active[token]:
-                raise RobotError("publish outside this enabled view's groups")
-            if self.clock.monotonic() - snapshot.received_at > self.profile.feedback_timeout_s:
-                self._fail("publish: stale control group snapshot")
-            self._health(controlling=True)
-            required = self._resources(self._active_groups())
-            lease = self._lease("get_lease")
-            if not set(required) <= set(lease.resources):
-                self._fail("get_lease: active resources lost")
-            # All backend vectors have already been validated before constructing any message.
-            command = self.sdk.ControlGroupCommand()
-            entries = []
-            for name, values in positions.items():
-                group = next(g for g in self.profile.groups if g.name == name)
-                entry = self.sdk.JointCommand()
-                entry.group_name = name
-                entry.control_type = self.sdk.JointControlType.JOINT
-                entry.motor_mode = getattr(self.sdk.MotorMode, group.motor_mode)
-                entry.position = list(values)
-                entry.velocity = [0.0] * len(values)
-                entry.effort = [0.0] * len(values)
-                entries.append(entry)
-            command.joint_cmd = entries
-            self._check_fault()
-            self._operation("publish_control_group_command", self._call("publish_control_group_command", command))
+            if token not in self._enabled or threading.get_ident() != self._owner_thread:
+                raise RobotError('write blocked: disabled view or wrong command owner')
+            if not vectors or set(vectors) - self._refs[token]:
+                raise RobotError('command contains an unowned group')
+            self.check_snapshot(snapshot)
+            for name, vector in vectors.items():
+                next(g for g in self.profile.groups if g.name == name).check_vector(vector)
+            self._check_fsm()  # Immediately before every command; never changes FSM.
+            result = self._call('set_group_cmd', position_cmd={k: list(v) for k, v in vectors.items()})
+            if result is not None:
+                self.fault = f'set_group_cmd: unexpected return {result!r}; 0.1.8 returns None (no acknowledgement)'
+                raise RobotError(self.fault)
+            # None means the call returned, NOT delivery or physical success.
 
-    def disable(self, token):
+    def disable(self, token, *, fault=False):
         with self._lock:
-            self._owner()
-            was_active = self._active.pop(token, None) is not None  # Block before any service call.
-            if not was_active and self._active:
-                return
-            if not self._lease_attempted:
-                return
-            if self._active and not self.fault and not self._lease_lost.is_set():
-                self._lease("replace_lease", self._resources(self._active_groups()))
-            else:
-                # Do not publish hold commands, reset pose, switch FSM, or servo off.
-                self._lease("release_lease", usable=False)
-                self._lease_attempted = False
+            self._enabled.discard(token)
+            if fault:
+                self._blocked_groups.update(self._refs.get(token, ()))
 
     def detach(self, token):
         with self._lock:
-            if token not in self._views:
-                return
-            errors = []
-            try:
-                self.disable(token)
-            except BaseException as exc:
-                errors.append(exc)
-            self._views.pop(token, None)
-            if not self._views:
-                try:
-                    if self._lease_attempted:
-                        self._lease("release_lease", usable=False)
-                        self._lease_attempted = False
-                except BaseException as exc:
-                    errors.append(exc)
-                try:
-                    self._void("stop")
-                except BaseException as exc:
-                    errors.append(exc)
-                finally:
-                    self.started = False
-                    self.closed = True
-            if errors:
-                raise RobotError("Aurora cleanup: " + "; ".join(str(e) for e in errors))
+            self.disable(token)
+            self._refs.pop(token, None)
+            if not self._refs:
+                self._close_client()
 
-    def doctor(self):
-        snapshot = self.snapshot()
-        info = snapshot.aurora.robot_info
-        return {
-            "api_family": self.profile.api_family, "sdk_version": self.profile.sdk_version,
-            "robot_type": info.robot_type, "hardware_type": info.hardware_type,
-            "end_effector_type": info.end_effector_type,
-            "fsm": {"id": snapshot.aurora.current_state.id, "name": snapshot.aurora.current_state.name},
-            "feedback_age_s": snapshot.age_s,
-            "groups": {g.group_name: {"position_count": len(g.joint_position),
-                                       "velocity_count": len(g.joint_velocity), "effort_count": len(g.joint_effort)}
-                       for g in snapshot.groups.joint_state},
-            "profile_verified": self.profile.verified, "simulated": self.profile.simulated,
-            "execute_authorized": self.execute,
-        }
+    def _close_client(self):
+        if self.closed:
+            return
+        self.closed = True  # Block writes before cleanup, including cleanup failure.
+        self._enabled.clear()
+        try:
+            if self.client is not None:
+                result = self.client.close()
+                if result is not None:
+                    raise RobotError('close: unexpected SDK result')
+        finally:
+            for logger in self._loggers:
+                logger.removeHandler(self._errors)
+            self._loggers.clear()

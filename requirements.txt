@@ -6,6 +6,6 @@ joblib>=1.2
 scikit-learn==1.7.2
 ./flexarm_estimator-0.3.0-py3-none-any.whl
 
-# Optional real Aurora support: install requirements-aurora.txt with the official
-# SDK wheel and matching native DDS runtimes. See docs/aurora_control.md.
+# Optional Aurora 0.1.8 backend/diagnostics: install requirements-aurora.txt.
+# See docs/aurora_control.md and docs/aurora_sdk_environment.md.
 # DyMotor's native library/bridge is built separately; see README.md.

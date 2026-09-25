@@ -279,9 +279,9 @@ def main() -> int:
     parser.add_argument("--robot", choices=("fake", "dymotor", "aurora", "aurora-fake"), default="dymotor")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--aurora-profile", type=Path)
-    parser.add_argument("--side", choices=("left", "right"))
+    parser.add_argument("--arm-side", "--side", dest="side", choices=("left", "right"))
     parser.add_argument("--source-side", choices=("left", "right"))
-    parser.add_argument("--confirm", choices=("EXECUTE_AURORA",))
+    parser.add_argument("--confirm", choices=("EXECUTE_AURORA",), help="deprecated; does not replace interactive YES")
     parser.add_argument("--duration", type=float)
     parser.add_argument("--robot-config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--sensor-config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
@@ -329,8 +329,6 @@ def main() -> int:
             parser.error("current shoulder predictors require explicit --source-side right --side right; cross-side mapping is unverified")
         if args.robot == "aurora" and args.aurora_profile is None:
             parser.error("Aurora requires --aurora-profile")
-        if args.execute and args.robot == "aurora" and args.confirm != "EXECUTE_AURORA":
-            parser.error("Aurora execute requires --confirm EXECUTE_AURORA")
         if args.execute and args.duration is None:
             parser.error("Aurora execute requires a bounded --duration")
     if args.robot in ("dymotor", "aurora") and args.execute:
@@ -338,6 +336,12 @@ def main() -> int:
             parser.error("real robot execution requires --sleeve real")
         if args.imus != "real":
             parser.error("real robot execution requires --imus real")
+
+    if args.robot == "aurora" and not args.execute:
+        from tools.aurora_control import main as aurora_preview
+        print("Aurora NO MOTION: offline preview only. Use aurora-fake to test the sensor chain.")
+        return aurora_preview(["--profile", str(args.aurora_profile), "joint", "--side", args.side,
+                               "--joint", "shoulder_flexion", "--angle-deg", "0"])
 
     state = RuntimeState.INIT
     source = controller = robot = shoulder_estimator = shoulder_predictor = rotation_estimator = None
@@ -403,7 +407,7 @@ def main() -> int:
             args.robot, robot_config, library_path=args.library, diagnostics=args.bridge_diagnostics,
             profile=args.aurora_profile, side=args.side,
             execute=args.execute or args.robot == "aurora-fake",
-            operator_confirmed=args.confirm == "EXECUTE_AURORA",
+            operator_confirmed=False,
         )
         if is_aurora:
             robot_config = robot.config
@@ -545,11 +549,17 @@ def main() -> int:
                   if is_aurora else ArmMapper(elbow_config, startup))
         motion_enabled = args.robot in ("fake", "aurora-fake") or args.execute
         if motion_enabled:
+            if args.robot == "aurora":
+                print("Aurora semantic startup positions:", startup)
+                if input("Type YES to continue: ") != "YES":
+                    print("Cancelled: NO MOTION")
+                    return 0
+                robot.session.operator_confirmed = True
             controller.enable()
             controller.set_joint_positions(startup, dt=1.0 / phase3.control_hz)
             state = RuntimeState.ARMED
         else:
-            print("READ ONLY: Aurora has no lease, FSM switch or motion publisher." if is_aurora else
+            print("READ ONLY: no joint commands sent; SDK client creates publishers during connect; no FSM changes." if is_aurora else
                   "DRY RUN: vendor startup used Servo On; no post-startup model target is sent.")
 
         period = 1.0 / phase3.control_hz
@@ -571,7 +581,7 @@ def main() -> int:
             now = time.monotonic()
             cycles += 1
             if is_aurora:
-                # Keep robot/lease health checks active even if sensor reads cease.
+                # Keep robot/FSM health checks active even if sensor reads cease.
                 controller.read_joint_states()
                 sensor_timestamp = frame.timestamp if frame is not None else sample.timestamp
                 if watchdog.is_stale(sensor_timestamp, now):

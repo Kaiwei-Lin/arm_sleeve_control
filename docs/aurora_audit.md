@@ -1,5 +1,7 @@
 # Aurora 接入审计（2026-09-25）
 
+> 本文是此前 1.0.1 后端开发阶段的历史记录。后续已实际安装并审计 PyPI 0.1.8；当前环境、HEAD、依赖清单和 API 结论以 [aurora_sdk_environment.md](aurora_sdk_environment.md) 为准。两套 API 不兼容；本文末尾 requirements-aurora 的旧说明已被新清单替代。后续动作 backend 也已迁移到 0.1.8，当前实现见 [aurora_control.md](aurora_control.md)，本文仅保留历史审计依据。
+
 ## 工作区与来源
 
 - 实际工作区 HEAD：`5f9168fb3cf92e65a221ee19657e9fbdce63015f`，与给定 arm_sleeve_control master 参考一致；未切换分支、回退、提交或 push。

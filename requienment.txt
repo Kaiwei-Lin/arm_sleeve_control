@@ -1,4 +1,4 @@
 # Compatibility entry point for the requested filename.
 # Install from the repository root: python -m pip install -r requienment.txt
-# Real Aurora support additionally uses requirements-aurora.txt.
+# Optional Aurora backend/SDK diagnostics use requirements-aurora.txt (0.1.8).
 -r requirements.txt

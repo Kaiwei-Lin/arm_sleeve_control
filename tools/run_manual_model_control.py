@@ -14,7 +14,8 @@ from sleeve_arm.config import DEFAULT_CONFIG_PATH, DEFAULT_PHASE3_CONFIG_PATH, l
 from sleeve_arm.control import ArmMapper, SafeArmController
 from sleeve_arm.control.safety import clamp_position
 from sleeve_arm.domain import ArmAction, JOINT_NAMES
-from sleeve_arm.robot import DyMotorArm, FakeRobotArm
+from sleeve_arm.robot import DyMotorArm
+from sleeve_arm.robot.factory import create_robot
 from sleeve_arm.robot.dymotor import semantic_to_sdk_position
 from tools.debug_model_mapping import manual_intent
 
@@ -59,7 +60,7 @@ def main() -> int:
 
     action = ArmAction[args.action.upper()]
     intent = manual_intent(action, args.shoulder_angle_deg, args.elbow_angle_deg, args.upper_arm_rotation_deg)
-    backend = FakeRobotArm(config) if args.robot == "fake" else DyMotorArm(config, args.library)
+    backend = create_robot(args.robot, config, library_path=args.library)
     controller = SafeArmController(backend, config)
     period = 1.0 / phase3.control_hz
     exit_code = 0

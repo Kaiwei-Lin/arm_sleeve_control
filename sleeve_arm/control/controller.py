@@ -177,8 +177,8 @@ class SafeArmController:
         errors: list[str] = []
         try:
             self.disable()
-        except BaseException as exc:  # close still has its own Servo Off attempt
-            errors.append(f"Servo Off failed: {exc}")
+        except BaseException as exc:  # close must still run if disable fails
+            errors.append(f"{getattr(self.robot, 'disable_operation_name', 'Servo Off')} failed: {exc}")
         try:
             self.close()
         except BaseException as exc:
@@ -245,7 +245,7 @@ class SafeArmController:
         try:
             self.robot.disable()
         except BaseException as exc:
-            stop_errors.append(f"Servo Off failed: {exc}")
+            stop_errors.append(f"{getattr(self.robot, 'disable_operation_name', 'Servo Off')} failed: {exc}")
         try:
             self.robot.close()
             self.connected = False

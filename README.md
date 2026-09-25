@@ -11,15 +11,20 @@ Python tools -> SafetyController -> DyMotorArm (ctypes)
 
 ## Fourier Aurora 接入
 
-新增可选 Aurora 后端、共享 lease 会话、左右臂方向/具名关节控制及有限次摆动。默认离线 fake；真机执行要求完整的现场验证 profile、`--execute` 和 `--confirm EXECUTE_AURORA`。参见 [接入与现场验收文档](docs/aurora_control.md) 和 [源码/API 审计](docs/aurora_audit.md)。
+当前 Aurora backend 固定使用已安装并审计的 **`fourier_aurora_client==0.1.8`**。提供左右臂方向/具名关节控制、有界摆动和单侧模型输入；默认是 **NO MOTION 离线 preview**。真实动作要求已验证的现场 profile、`--execute` 和交互输入恰好 `YES`。详见 [Aurora 控制与现场确认](docs/aurora_control.md) 和 [SDK 环境审计](docs/aurora_sdk_environment.md)。
 
 ```bash
-python tools/aurora_control.py doctor
+# 默认离线 preview；未知硬件/反馈字段显示 null，不连接 DDS
 python tools/aurora_control.py move --side left --direction forward --angle-deg 5 --duration 2
-python tools/aurora_control.py swing --side right --joint elbow_flexion --amplitude-deg 3 --period 2 --cycles 2
+# 无需 SDK 的 fake 轨迹；全部参数为合成测试值
+python tools/aurora_control.py --backend fake swing --side right --joint elbow_flexion --amplitude-deg 3 --period 2 --cycles 2 --simulate
+# SDK import/API 审计，不创建会话
+python tools/aurora_control.py doctor
 ```
 
-以上为无需 SDK 的离线模拟。Aurora 的只读 doctor 不注册 lease、不创建命令 publisher、不切 FSM。DyMotor 原有 connect 会执行厂家使能流程，其无 `--execute` 行为仍按下文说明处理。`run_model_control.py` 新增 `--robot aurora/aurora-fake`，要求显式源侧和目标侧；当前右肩模型不自动映射左臂。
+复制 `configs/robot_aurora.yaml` 后按现场记录填组名、DOF、索引、方向、零位、限位和允许 FSM；未验证模板不能 execute。只读现场能力探测沿用 `tools/aurora_sdk_doctor.py --connect --domain-id ...`，只有显式 `--connect` 才启动 DDS。本轮未运行真机连接或动作。`run_model_control.py --robot aurora --arm-side right --source-side right` 只绑定右臂，不将原右肩模型自动映射到左臂。
+
+Aurora 0.1.8 没有 lease；enable 仅允许本应用发送，停止发布/关闭客户端不等于物理停止。DyMotor 原 connect 会执行厂家使能流程，其无 `--execute` 行为仍按下文说明处理。
 
 ## 项目当前阶段
 
@@ -196,13 +201,29 @@ python -m pip install -r requirements.txt
 
 开发与离线测试额外安装 `python -m pip install -r requirements-dev.txt`。wheel 支持 Python ≥3.10，固定使用 `scikit-learn==1.7.2`；三柔性传感器模型的训练权重仍需按配置另外提供，wheel 不包含权重。Aurora 真机 SDK/DDS 和 DyMotor native bridge 不属于这份通用 pip 清单，分别按对应硬件文档安装。
 
-真实 Aurora 的 Python SDK 已单独列入 `requirements-aurora.txt`，固定 `fourier-aurora-client==1.0.1`。先安装匹配的原生 DDS 运行库，再提供官方 SDK wheel 所在目录，在仓库根目录执行：
+### Aurora optional backend dependencies
+
+在 **WSL/Linux 终端**、项目根目录执行。当前机器已有可复用的 Conda `skin` 环境（Python 3.10），SDK 已安装到该环境：
 
 ```bash
-python -m pip install --find-links /path/to/official/wheels -r requirements-aurora.txt
+conda activate skin
+python --version
+python -m pip install -r requirements-aurora.txt
+python -m pip check
+python tools/aurora_sdk_doctor.py
 ```
 
-`/path/to/official/wheels` 请替换为实际目录，其中需有匹配 Linux x86_64、CPython 3.10–3.13 的官方 1.0.1 wheel。仓库自带的 `flexarm_estimator` wheel 是估计器，不包含 Aurora SDK。当前核查 PyPI 仅提供 0.1.8/0.1.1，不能用它们替代本后端核实的 API；详见 [SDK 安装与依赖版本](docs/aurora_control.md#sdk-与安装)。
+`requirements-aurora.txt` 只固定 `fourier_aurora_client==0.1.8`，不加入基础或开发依赖；项目运行依赖及本地 flexarm wheel 仍用 `python -m pip install -r requirements.txt` 安装。若默认源找不到固定版本，可执行 `python -m pip install --index-url https://pypi.org/simple "fourier_aurora_client==0.1.8"`，不要改装其他版本。没有 `skin` 的其他机器可先创建 `conda create -n aurora python=3.10 pip -y`，再 `conda activate aurora`。
+
+默认 doctor 只做 import、版本和方法签名检查，不创建 DDS session。显式只读连接命令为：
+
+```bash
+python tools/aurora_sdk_doctor.py --connect --domain-id 123
+```
+
+**这条 `--connect` 命令会启动 DDS，只订阅状态，不发送机器人动作、不切 FSM、不申请 lease。本轮没有运行它。** `123` 是官方示例值，需与现场服务器核对；namespace/ROS 命名可用 `--namespace`、`--ros-compatible` 或 `--no-ros-compatible` 显式指定。连接有界超时，返回组名、向量长度及反馈接收新鲜度。0.1.8 消息没有 robot/hardware/end-effector type，输出为不可用，不能由组名推断。
+
+本次只验证 Linux x86_64 / WSL2 的 import；wheel 虽标记 `py3-none-any`，内部包含 Linux ELF `.so`，不能据此宣称 Windows 原生或 ARM 可用。其自带的 Fast DDS 库在本机已正常加载，未另装新 SDK 的 FourierDDS deb，也未改 `LD_LIBRARY_PATH`。完整版本、安装结果和 API 表见 [docs/aurora_sdk_environment.md](docs/aurora_sdk_environment.md)。
 
 在项目根目录构建：
 

@@ -12,10 +12,11 @@ from sleeve_arm.robot.aurora_profile import finite
 
 @dataclass(frozen=True)
 class MotionResult:
-    published: bool
+    submitted: bool
     arrived: bool
     targets_rad: dict[str, float]
     elapsed_s: float
+    delivery_confirmed: bool = False
 
 
 class UpperLimbService:
@@ -115,27 +116,15 @@ class UpperLimbService:
         self._run(lambda t: {key: middle - amplitude * math.cos(2 * math.pi * t / period)},
                   period * cycles, {key: entry})
         result = self.move_joints({key: middle}, duration_s=entry_duration)
-        return MotionResult(result.published, result.arrived, result.targets_rad, self.clock.monotonic() - began)
+        return MotionResult(result.submitted, result.arrived, result.targets_rad, self.clock.monotonic() - began)
 
     def hand_joints(self, *, side, angles_deg, duration_s=2.0):
         targets = {self._key(side, name, capability="hand_joints", part="hand"):
                    math.radians(finite(angle, name)) for name, angle in angles_deg.items()}
         return self.move_joints(targets, duration_s=duration_s)
 
-    def hand_closure(self, *, side, closure, duration_s=2.0):
-        value = finite(closure, "closure")
-        if not 0 <= value <= 1:
-            raise ValueError("closure must be in [0, 1]")
-        groups = [g for g in self.robot.groups if g.side == side and g.part == "hand"]
-        if len(groups) != 1 or "hand_closure" not in groups[0].capabilities:
-            raise ValueError("hand closure capability/calibration unavailable")
-        targets = {}
-        for joint in groups[0].joints:
-            if joint.open_position is None or joint.closed_position is None:
-                raise ValueError("hand open/closed calibration unavailable")
-            key = self._key(side, joint.name, capability="hand_closure", part="hand")
-            targets[key] = joint.open_position + value * (joint.closed_position - joint.open_position)
-        return self.move_joints(targets, duration_s=duration_s)
+    def hand_closure(self, **kwargs):
+        raise ValueError("hand closure unsupported: no verified opening/closing calibration")
 
     def wrist_joints(self, *, side, angles_deg, duration_s=2.0):
         """Only named physical wrist joints; never an invented 'palm' joint."""
@@ -168,13 +157,14 @@ class UpperLimbService:
             while True:
                 states = self.controller.read_joint_states()
                 # A publication is not arrival. Require a newer feedback sample as well as tolerance.
-                if all(states[k].received_at is not None and states[k].received_at >= last and
+                if self.robot.arrival_feedback_is_new(targets) and all(states[k].received_at is not None and states[k].received_at >= last and
                        abs(states[k].position - v) <= self.profile.arrival_tolerance_rad for k, v in targets.items()):
                     return MotionResult(True, True, dict(targets), self.clock.monotonic() - began)
                 if self.clock.monotonic() >= deadline:
-                    raise SafetyError("published trajectory but target arrival timed out")
+                    raise SafetyError("submitted trajectory but target arrival timed out (SDK provides no delivery acknowledgement)")
                 self.clock.sleep(self.period)
-        except BaseException:
+        except BaseException as exc:
+            self.robot._latch(exc)
             # This also covers Ctrl+C, fake clock errors, and callers outside CLI finally blocks.
             self.controller.fault = "trajectory interrupted/failed; explicit reconstruction required"
             self.controller.shutdown()
