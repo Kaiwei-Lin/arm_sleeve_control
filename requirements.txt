@@ -1,0 +1,11 @@
+# Python >=3.10. Run pip from the repository root so the local wheel resolves.
+PyYAML>=6
+pyserial>=3.5
+numpy>=1.23
+joblib>=1.2
+scikit-learn==1.7.2
+./flexarm_estimator-0.3.0-py3-none-any.whl
+
+# Optional real Aurora support requires its platform-specific official SDK wheel
+# and matching native DDS runtimes. See docs/aurora_control.md.
+# DyMotor's native library/bridge is built separately; see README.md.

@@ -63,3 +63,29 @@ class SensorWatchdog:
 
     def is_hard_timeout(self, sample_timestamp: float, now: float) -> bool:
         return self.age(sample_timestamp, now) > self.hard_timeout_s
+
+
+class AuroraIntentMapper:
+    """Route a single explicitly sided semantic intent to one arm only.
+
+    Current predictors/calibration prompts are right-arm contracts. Cross-side
+    mirroring requires a future validated mapping, and is deliberately rejected.
+    """
+    def __init__(self, robot, *, source_side: str, target_side: str):
+        if source_side != "right" or target_side != source_side:
+            raise ValueError("current shoulder estimators require source_side=right and target_side=right; cross-side mapping is unverified")
+        if robot.sides != (target_side,):
+            raise ValueError("one sleeve must bind exactly one declared target side")
+        self.robot = robot
+        self.side = target_side
+
+    def map(self, intent: MotionIntent) -> dict[str, float]:
+        fields = {"elbow_flexion": intent.elbow_flexion,
+                  "shoulder_flexion": intent.shoulder_flexion_rad,
+                  "shoulder_abduction": intent.shoulder_abduction_rad,
+                  "upper_arm_rotation": intent.upper_arm_rotation_rad}
+        targets = {self.robot.joint_key(self.side, joint): value
+                   for joint, value in fields.items() if value is not None}
+        if not targets:
+            raise ValueError("intent contains no supported joint target")
+        return targets

@@ -4,7 +4,7 @@ import math
 from collections.abc import Mapping
 
 from sleeve_arm.config import RobotConfig
-from sleeve_arm.domain.joint import JOINT_NAMES, JointState
+from sleeve_arm.domain.joint import JointState
 from sleeve_arm.robot.base import RobotArm, RobotError
 
 
@@ -18,8 +18,8 @@ class FakeRobotArm(RobotArm):
         self.closed = False
         self.disable_count = 0
         self.events: list[str] = []
-        self._positions = dict.fromkeys(JOINT_NAMES, 0.0)
-        self._errors = dict.fromkeys(JOINT_NAMES, 0)
+        self._positions = dict.fromkeys(config.joints, 0.0)
+        self._errors = dict.fromkeys(config.joints, 0)
 
     def connect(self) -> None:
         if self.connected:
@@ -87,7 +87,6 @@ class FakeRobotArm(RobotArm):
         if not self.connected:
             raise RobotError("fake robot is not connected")
 
-    @staticmethod
-    def _require_joint(joint_name: str) -> None:
-        if joint_name not in JOINT_NAMES:
+    def _require_joint(self, joint_name: str) -> None:
+        if joint_name not in self.config.joints:
             raise RobotError(f"unknown joint: {joint_name}")

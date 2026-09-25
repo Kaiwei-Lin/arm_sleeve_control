@@ -23,6 +23,14 @@ class RobotArm(ABC):
     @abstractmethod
     def read_joint_state(self, joint_name: str) -> JointState: ...
 
+    def read_joint_states(self, joint_names) -> dict[str, JointState]:
+        """Batch hook; backends may override to extract one coherent snapshot."""
+        return {name: self.read_joint_state(name) for name in joint_names}
+
+    def set_joint_positions_checked(self, targets, states) -> None:
+        """Send after controller validation; snapshot backends can reuse states."""
+        self.set_joint_positions(targets)
+
     @abstractmethod
     def set_joint_position(self, joint_name: str, position: float) -> None: ...
 

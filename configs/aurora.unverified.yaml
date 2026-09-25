@@ -1,0 +1,47 @@
+# Read-only template. Nothing here establishes physical robot calibration.
+# SDK defaults below are connection examples: confirm actual DDS configuration.
+api_family: aurora-configure-lease-v1
+sdk_version: '1.0.1'
+verified: false
+simulated: false
+verification_note: ''
+robot_type: null
+hardware_type: null
+end_effector_type: null
+connection:
+  domain_id: 123
+  source_name: sleeve-aurora
+  topic_prefix: aurora/
+  dds_mode: 0
+  use_namespace: true
+  # namespace_name: confirm-on-site
+  # use_discovery_server: false
+  service_timeout_ms: 1000
+allowed_fsm: []
+# Application budgets below are provisional and must be reviewed on site.
+feedback_timeout_s: 0.25
+endpoint_timeout_s: 5.0
+control_period_s: 0.02
+arrival_tolerance_rad: 0.005
+arrival_timeout_s: 3.0
+stop_policy: null
+# These names/resources are supported by the SDK; presence on your robot unknown.
+groups:
+  - name: left_manipulator
+    side: left
+    part: arm
+    resource: LEFT_MANIPULATOR
+    count: null
+    motor_mode: null
+    verified: false
+    capabilities: []
+    joints: []
+  - name: right_manipulator
+    side: right
+    part: arm
+    resource: RIGHT_MANIPULATOR
+    count: null
+    motor_mode: null
+    verified: false
+    capabilities: []
+    joints: []

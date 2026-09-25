@@ -1,0 +1,3 @@
+# Compatibility entry point for the requested filename.
+# Install from the repository root: python -m pip install -r requienment.txt
+-r requirements.txt

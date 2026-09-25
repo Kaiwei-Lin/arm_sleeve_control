@@ -62,6 +62,8 @@ def validate_feedback(
 ) -> None:
     if state.name != config.name:
         raise FeedbackError(f"feedback name mismatch: {state.name} != {config.name}")
+    if state.position is None:
+        raise FeedbackError(f"{state.name}: position feedback is unavailable")
     values = {
         "position": state.position,
         "velocity": state.velocity,
@@ -70,16 +72,21 @@ def validate_feedback(
     if state.current is not None:
         values["current"] = state.current
     for label, value in values.items():
-        if not math.isfinite(value):
+        if value is not None and not math.isfinite(value):
             raise FeedbackError(f"{state.name}: {label} is not finite")
-    if state.error != 0:
+    if state.error is None and getattr(config, "require_motor_error", False):
+        raise FeedbackError(f"{state.name}: motor error feedback is unavailable")
+    if state.error is not None and state.error != 0:
         raise FeedbackError(f"{state.name}: motor error code {state.error}")
     if config.min_position is not None and state.position < config.min_position:
         raise FeedbackError(f"{state.name}: feedback is below min_position")
     if config.max_position is not None and state.position > config.max_position:
         raise FeedbackError(f"{state.name}: feedback is above max_position")
-    if config.max_velocity is not None and abs(state.velocity) > config.max_velocity:
-        raise FeedbackError(f"{state.name}: velocity exceeds max_velocity")
+    if config.max_velocity is not None:
+        if state.velocity is None:
+            raise FeedbackError(f"{state.name}: velocity feedback is unavailable")
+        if abs(state.velocity) > config.max_velocity:
+            raise FeedbackError(f"{state.name}: velocity exceeds max_velocity")
     if config.max_current is not None:
         if state.current is None:
             raise FeedbackError(f"{state.name}: current feedback is unavailable")

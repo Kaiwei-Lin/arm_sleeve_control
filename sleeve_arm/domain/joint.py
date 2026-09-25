@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-JOINT_NAMES = (
+# Fixed DyMotor native ABI order. Never extend this tuple for other robots.
+DYMOTOR_JOINT_NAMES = (
     "shoulder_flexion",
     "shoulder_abduction",
     "elbow_flexion",
@@ -11,16 +12,20 @@ JOINT_NAMES = (
 )
 
 
+JOINT_NAMES = DYMOTOR_JOINT_NAMES  # Historical public alias.
+
+
 @dataclass(frozen=True)
 class JointState:
     name: str
     position: float
-    velocity: float
+    velocity: float | None
     current: float | None
-    torque: float
-    state: int
-    bus: int
-    error: int
+    torque: float | None
+    state: int | None
+    bus: int | None
+    error: int | None
+    received_at: float | None = None
 
 
 @dataclass(frozen=True)

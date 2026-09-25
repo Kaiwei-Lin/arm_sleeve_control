@@ -9,6 +9,18 @@ Python tools -> SafetyController -> DyMotorArm (ctypes)
              -> libdymotor_bridge.so -> 厂家 libMotorDrive.so -> mechanical arm
 ```
 
+## Fourier Aurora 接入
+
+新增可选 Aurora 后端、共享 lease 会话、左右臂方向/具名关节控制及有限次摆动。默认离线 fake；真机执行要求完整的现场验证 profile、`--execute` 和 `--confirm EXECUTE_AURORA`。参见 [接入与现场验收文档](docs/aurora_control.md) 和 [源码/API 审计](docs/aurora_audit.md)。
+
+```bash
+python tools/aurora_control.py doctor
+python tools/aurora_control.py move --side left --direction forward --angle-deg 5 --duration 2
+python tools/aurora_control.py swing --side right --joint elbow_flexion --amplitude-deg 3 --period 2 --cycles 2
+```
+
+以上为无需 SDK 的离线模拟。Aurora 的只读 doctor 不注册 lease、不创建命令 publisher、不切 FSM。DyMotor 原有 connect 会执行厂家使能流程，其无 `--execute` 行为仍按下文说明处理。`run_model_control.py` 新增 `--robot aurora/aurora-fake`，要求显式源侧和目标侧；当前右肩模型不自动映射左臂。
+
 ## 项目当前阶段
 
 Phase 1 原有三个机械臂关节的位置控制与 PVCT 读取现已扩展加入大臂旋转电机。Phase 2 新增袖套、IMU、时间同步和数据记录。Phase 3/4 已接入 CH2 肘部规则、可切换的双 IMU/三柔性肩部方向与幅度估计，以及可选的 IMU3/4 大臂旋转；四个语义关节经同一个 Mapper、SafetyController 和 Robot command owner 下发。
@@ -177,8 +189,12 @@ Fast PVCT API **没有 current 输出**，所以 Python 中 `JointState.current`
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements.txt
 ```
+
+请在仓库根目录运行安装命令。`requirements.txt` 会同时安装项目 Python 运行依赖与仓库自带的 `flexarm_estimator-0.3.0-py3-none-any.whl`，无需另外手动安装 wheel。`requienment.txt` 是同一清单的兼容入口，亦可使用 `python -m pip install -r requienment.txt`。
+
+开发与离线测试额外安装 `python -m pip install -r requirements-dev.txt`。wheel 支持 Python ≥3.10，固定使用 `scikit-learn==1.7.2`；三柔性传感器模型的训练权重仍需按配置另外提供，wheel 不包含权重。Aurora 真机 SDK/DDS 和 DyMotor native bridge 不属于这份通用 pip 清单，分别按对应硬件文档安装。
 
 在项目根目录构建：
 

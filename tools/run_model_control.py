@@ -269,13 +269,19 @@ def prepare_dual_imu_estimator(
 
 def main() -> int:
     from sleeve_arm.control import ArmMapper, SafeArmController, SensorWatchdog
-    from sleeve_arm.robot import DyMotorArm, FakeRobotArm
+    from sleeve_arm.robot import DyMotorArm
+    from sleeve_arm.robot.factory import create_robot
+    from sleeve_arm.control.mapper import AuroraIntentMapper
 
     parser = argparse.ArgumentParser(description="Selectable dual-IMU or three-flex shoulder control; real motion requires --execute.")
     parser.add_argument("--sleeve", choices=("fake", "real"), default="real")
     parser.add_argument("--imus", choices=("fake", "real"), default="real")
-    parser.add_argument("--robot", choices=("fake", "dymotor"), default="dymotor")
+    parser.add_argument("--robot", choices=("fake", "dymotor", "aurora", "aurora-fake"), default="dymotor")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--aurora-profile", type=Path)
+    parser.add_argument("--side", choices=("left", "right"))
+    parser.add_argument("--source-side", choices=("left", "right"))
+    parser.add_argument("--confirm", choices=("EXECUTE_AURORA",))
     parser.add_argument("--duration", type=float)
     parser.add_argument("--robot-config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--sensor-config", type=Path, default=DEFAULT_SENSOR_CONFIG_PATH)
@@ -313,11 +319,21 @@ def main() -> int:
         help="include available IMU quaternions in 1 Hz telemetry",
     )
     args = parser.parse_args()
-    if args.duration is not None and args.duration <= 0:
+    if args.duration is not None and (not math.isfinite(args.duration) or args.duration <= 0):
         parser.error("--duration must be positive")
     if args.calibration_seconds is not None and args.calibration_seconds <= 0:
         parser.error("--calibration-seconds must be positive")
-    if args.robot == "dymotor" and args.execute:
+    is_aurora = args.robot in ("aurora", "aurora-fake")
+    if is_aurora:
+        if args.side != "right" or args.source_side != "right":
+            parser.error("current shoulder predictors require explicit --source-side right --side right; cross-side mapping is unverified")
+        if args.robot == "aurora" and args.aurora_profile is None:
+            parser.error("Aurora requires --aurora-profile")
+        if args.execute and args.robot == "aurora" and args.confirm != "EXECUTE_AURORA":
+            parser.error("Aurora execute requires --confirm EXECUTE_AURORA")
+        if args.execute and args.duration is None:
+            parser.error("Aurora execute requires a bounded --duration")
+    if args.robot in ("dymotor", "aurora") and args.execute:
         if args.sleeve != "real":
             parser.error("real robot execution requires --sleeve real")
         if args.imus != "real":
@@ -371,7 +387,7 @@ def main() -> int:
             )
         watchdog = SensorWatchdog(phase3.sensor_timeout_ms, phase3.hard_timeout_ms)
 
-        robot_config = load_robot_config(args.robot_config)
+        robot_config = None if is_aurora else load_robot_config(args.robot_config)
         if args.robot == "dymotor" and args.execute:
             controlled = ["shoulder_flexion", "shoulder_abduction", "elbow_flexion"]
             if rotation_config.enabled:
@@ -383,11 +399,14 @@ def main() -> int:
                         f"{name}: absolute model control requires calibrated "
                         "zero_position, min_position, and max_position"
                     )
-        robot = (
-            FakeRobotArm(robot_config)
-            if args.robot == "fake"
-            else DyMotorArm(robot_config, args.library, diagnostics=args.bridge_diagnostics)
+        robot = create_robot(
+            args.robot, robot_config, library_path=args.library, diagnostics=args.bridge_diagnostics,
+            profile=args.aurora_profile, side=args.side,
+            execute=args.execute or args.robot == "aurora-fake",
+            operator_confirmed=args.confirm == "EXECUTE_AURORA",
         )
+        if is_aurora:
+            robot_config = robot.config
         controller = SafeArmController(robot, robot_config)
         controller.connect()
         controller.read_joint_states()
@@ -522,14 +541,16 @@ def main() -> int:
 
         startup_states = controller.read_joint_states()
         startup = {name: item.position for name, item in startup_states.items()}
-        mapper = ArmMapper(elbow_config, startup)
-        motion_enabled = args.robot == "fake" or args.execute
+        mapper = (AuroraIntentMapper(robot, source_side=args.source_side, target_side=args.side)
+                  if is_aurora else ArmMapper(elbow_config, startup))
+        motion_enabled = args.robot in ("fake", "aurora-fake") or args.execute
         if motion_enabled:
             controller.enable()
             controller.set_joint_positions(startup, dt=1.0 / phase3.control_hz)
             state = RuntimeState.ARMED
         else:
-            print("DRY RUN: vendor startup used Servo On; no post-startup model target is sent.")
+            print("READ ONLY: Aurora has no lease, FSM switch or motion publisher." if is_aurora else
+                  "DRY RUN: vendor startup used Servo On; no post-startup model target is sent.")
 
         period = 1.0 / phase3.control_hz
         started = next_tick = last_print = time.monotonic()
@@ -549,6 +570,12 @@ def main() -> int:
             frame = source.latest()
             now = time.monotonic()
             cycles += 1
+            if is_aurora:
+                # Keep robot/lease health checks active even if sensor reads cease.
+                controller.read_joint_states()
+                sensor_timestamp = frame.timestamp if frame is not None else sample.timestamp
+                if watchdog.is_stale(sensor_timestamp, now):
+                    raise RuntimeError("Aurora sensor watchdog: stale/missing sleeve feedback; restart requires confirmation")
             if frame is not None:
                 sample = shoulder_sync.synchronize(frame)
                 if shoulder_backend == "dual_imu":
@@ -569,6 +596,8 @@ def main() -> int:
                         elbow_intent = elbow_predictor.predict(sample)
                         intent = replace(shoulder_intent, elbow_flexion=elbow_intent.elbow_flexion)
                     except Exception as exc:
+                        if is_aurora:
+                            raise RuntimeError(f"Aurora prediction fault: {exc}") from exc
                         invalid += 1
                         consecutive_errors += 1
                         last_frame_timestamp = sample.timestamp
@@ -589,6 +618,8 @@ def main() -> int:
                                 rotation_result = rotation_estimator.update(*last_rotation_frames)
                                 last_rotation_rad = math.radians(rotation_result.difference_deg)
                             except Exception as exc:
+                                if is_aurora:
+                                    raise RuntimeError(f"Aurora IMU prediction fault: {exc}") from exc
                                 rotation_invalid += 1
                                 rotation_consecutive_errors += 1
                                 print(
