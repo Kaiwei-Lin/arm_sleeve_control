@@ -1,0 +1,7 @@
+# Optional real Aurora backend: Linux x86_64, CPython 3.10-3.13 (standard GIL).
+# First install the native DDS runtimes listed in the audited SDK REVISIONS.yaml.
+# Then, from this repository root, supply the official 1.0.1 wheel directory:
+# python -m pip install --find-links /path/to/official/wheels -r requirements-aurora.txt
+# Do not substitute older PyPI releases or remove this exact version pin.
+-r requirements.txt
+fourier-aurora-client==1.0.1

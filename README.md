@@ -196,6 +196,14 @@ python -m pip install -r requirements.txt
 
 开发与离线测试额外安装 `python -m pip install -r requirements-dev.txt`。wheel 支持 Python ≥3.10，固定使用 `scikit-learn==1.7.2`；三柔性传感器模型的训练权重仍需按配置另外提供，wheel 不包含权重。Aurora 真机 SDK/DDS 和 DyMotor native bridge 不属于这份通用 pip 清单，分别按对应硬件文档安装。
 
+真实 Aurora 的 Python SDK 已单独列入 `requirements-aurora.txt`，固定 `fourier-aurora-client==1.0.1`。先安装匹配的原生 DDS 运行库，再提供官方 SDK wheel 所在目录，在仓库根目录执行：
+
+```bash
+python -m pip install --find-links /path/to/official/wheels -r requirements-aurora.txt
+```
+
+`/path/to/official/wheels` 请替换为实际目录，其中需有匹配 Linux x86_64、CPython 3.10–3.13 的官方 1.0.1 wheel。仓库自带的 `flexarm_estimator` wheel 是估计器，不包含 Aurora SDK。当前核查 PyPI 仅提供 0.1.8/0.1.1，不能用它们替代本后端核实的 API；详见 [SDK 安装与依赖版本](docs/aurora_control.md#sdk-与安装)。
+
 在项目根目录构建：
 
 ```bash

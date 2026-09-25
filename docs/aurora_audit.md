@@ -92,3 +92,11 @@ git -c core.whitespace=cr-at-eol diff --check -- \
 按用户要求加入仓库根目录的 `flexarm_estimator-0.3.0-py3-none-any.whl`。新增 `requirements.txt` 作为唯一运行依赖清单，含本地 wheel、PyYAML、pyserial、numpy、joblib 和固定的 scikit-learn 1.7.2；`requienment.txt` 为用户指定文件名的转引入口；`requirements-dev.txt` 复用运行依赖并增加 pytest。README 同步安装说明。Aurora native SDK/DDS 和 DyMotor bridge 仍按硬件文档单独部署。
 
 在 `/tmp/sleeve-aurora-tests` 中实际运行 `python -m pip install -r requienment.txt -r requirements-dev.txt` 成功；`pip check` 无依赖冲突。真实 wheel 的 DualImuArmEstimator 完成合成单位四元数静态标定与 update，返回 Rest / 0°；FlexArmEstimator 导入成功。该检查未使用真实传感器、机器人或训练模型权重。
+
+## Aurora SDK 安装清单补充
+
+补充 `requirements-aurora.txt`，包含基础运行依赖与精确的 `fourier-aurora-client==1.0.1`；README、通用清单注释和安装文档增加该入口。SDK 继续作为真机专用可选依赖，安装需通过 `--find-links` 提供官方平台 wheel，并先按 REVISIONS.yaml 安装本机原生 DDS/message 运行库。
+
+实际执行 `pip index versions fourier-aurora-client --index-url https://pypi.org/simple` 仅列出 0.1.8/0.1.1。`pip install --dry-run -r requirements-aurora.txt --index-url https://pypi.org/simple` 因缺少 1.0.1 返回失败，证实不会解析到未经验证的版本；未声称真实 SDK 安装通过。基础 `requienment.txt` 的 dry-run 和离线 fake doctor 均成功。
+
+发现官方审计提交的 docs/overview.md 表格写消息包 0.2.0-1，而 REVISIONS.yaml compatibility 条目写 0.1.0-1；安装文档已披露，以精确 revision 清单为核对依据，并要求现场向厂家确认。当前工作区没有 Aurora wheel 或 DDS deb，未实际安装这些二进制包，也未启动真实 DDS。

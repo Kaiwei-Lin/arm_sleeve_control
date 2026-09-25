@@ -6,13 +6,38 @@
 
 正式支持 API 家族 `aurora-configure-lease-v1`，客户端包 `fourier-aurora-client==1.0.1`，核实源码提交 `3d4e02e170364dff83e7f35e29b55c86cf728b92`。完整版本/API/改动记录见 [aurora_audit.md](aurora_audit.md)。未验证的客户端版本、旧 get_group_state/set_group_cmd 家族会明确失败，不会试探控制或自动回退。
 
-官方 Python wheel 针对 Linux x86_64、标准 GIL CPython 3.10–3.13。现场需由维护人员取得匹配平台的官方 wheel，先安装官方 REVISIONS.yaml 对应的 DDS/message runtimes，再在选定 Python 环境安装：
+官方 Python wheel 针对 Linux x86_64、标准 GIL CPython 3.10–3.13。真实后端的安装入口为仓库根目录 `requirements-aurora.txt`：包含基础运行依赖，并精确要求 `fourier-aurora-client==1.0.1`。普通 `requirements.txt` / `requienment.txt` 保持 SDK 可选，fake、传感器和 DyMotor 不需要 Aurora SDK。
+
+安装步骤（仅在应用控制电脑安装依赖，不升级机器人端服务/固件）：
+
+1. 从厂家取得对应 CPython/平台的官方 1.0.1 wheel，以及以下 DDS/message 包。仓库自带的 `flexarm_estimator-0.3.0` 是估计器，不能代替机器人 SDK。不要根据版本大小猜测 API 兼容性。
+2. 依据核实提交的 [REVISIONS.yaml](https://github.com/FFTAI/fourier_aurora_sdk/blob/3d4e02e170364dff83e7f35e29b55c86cf728b92/REVISIONS.yaml) 安装本机 `fourier_dds 1.2.0-1`（revision `1aec6d3307c3f64c1210b4d26d113fe0979c29c3`）和 `fourier-dds-msgs 0.1.0-1`（revision `18a24585984e04be401cf1acc0151d5b5e95b2cd`），包括它们要求的原生运行库。它们是系统包，不能以同名 pip 包替代。该提交 overview.md 的消息包版本表与 REVISIONS.yaml 有出入，此处采用精确 revision/兼容清单；部署前需向厂家核实。
+3. 在本项目根目录及选定虚拟环境安装；将占位路径替换为实际官方 wheel 目录：
 
 ```bash
-python -m pip install /path/to/fourier_aurora_client-1.0.1-PLATFORM.whl
+python -m pip install --find-links /path/to/official/wheels -r requirements-aurora.txt
+python -m pip check
 ```
 
-路径是现场 wheel 的占位符。DDS `fourier_dds 1.2.0-1`、`fourier-dds-msgs 0.1.0-1` 的确切 revision 见审计。客户端包版本不等于 Aurora 服务/固件版本；本项目不安装或升级机器人服务、固件。SDK 仅在真实 session.connect 时导入；所有 help、fake、传感器和 DyMotor 不要求此包。缺包会输出安装指引，没有运行时自动安装。
+2026-09-25 检查官方 PyPI 索引时只列出 0.1.8、0.1.1，没有 1.0.1。因此缺少官方 wheel 时此命令会明确失败，不要放宽版本、安装 latest 或改用旧 API。`--find-links` 提供本地官方 SDK wheel，普通 Python 依赖仍由 pip 正常解析。
+
+也可按 [官方源码构建说明](https://github.com/FFTAI/fourier_aurora_sdk/blob/3d4e02e170364dff83e7f35e29b55c86cf728b92/docs/overview.md) 从审计提交构建 wheel。前提仍是安装匹配的原生依赖；缺少 DDS 的 stub 构建不能用作真机安装。
+
+安装后的不连接机器人检查：
+
+```bash
+python - <<'PY'
+from importlib.metadata import version
+assert version("fourier-aurora-client") == "1.0.1"
+from fourier_aurora_client import AuroraClient, ConnectionOptions, ControlGroupCommand, JointCommand
+for name in ("configure", "start", "get_control_group_state", "publish_control_group_command",
+             "register_lease", "replace_lease", "get_lease", "release_lease"):
+    assert callable(getattr(AuroraClient, name, None)), name
+print("Aurora SDK import/API check passed; DDS not started")
+PY
+```
+
+该检查不调用 get_instance/start、不申请 lease、不切 FSM。客户端包版本不等于 Aurora 服务/固件版本；SDK 在本应用中仍仅在真实 session.connect 时延迟导入，没有运行时自动安装。目前仓库没有官方 Aurora wheel/native DDS 包，不能将依赖清单的补齐描述为本机 SDK 已安装或真实 DDS 已验收。
 
 普通离线环境：
 
