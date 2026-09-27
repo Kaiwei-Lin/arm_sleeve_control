@@ -1,19 +1,22 @@
 """Pinned 0.1.8 SDK adapter and shared process-client lifecycle.
 
-Only public client calls are used. A read-only check of _instance prevents
-adopting an externally initialized SDK singleton; it is never changed/reset.
+Public calls handle motion/state. The optional, narrowly scoped publisher
+initialization compatibility lives in aurora_sdk. A read-only _instance check
+prevents adopting an external SDK singleton; it is never changed/reset.
 """
 from __future__ import annotations
 
 import importlib
 import importlib.metadata
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
 
 from sleeve_arm.robot.aurora_profile import SDK_VERSION
 from sleeve_arm.robot.base import RobotError
+from sleeve_arm.robot.aurora_sdk import configure_dds_environment, initialize_client, velocity_cmd_only_mismatch
 
 
 class SystemClock:
@@ -43,11 +46,24 @@ class _SdkErrors(logging.Handler):
         super().__init__(logging.ERROR)
         self.event = threading.Event()
         self.message = ''
+        self.messages = []
 
     def emit(self, record):
         # SDK background callbacks/loggers only set a flag. No SDK operations.
         self.message = record.getMessage()
+        self.messages.append(self.message)
         self.event.set()
+
+    def accept_velocity_mismatch(self):
+        # Only discard the exact SDK log after publisher-list verification.
+        # Subscriber, service-client and unrelated errors remain latched.
+        with self.lock:
+            self.messages = [m for m in self.messages if not (
+                m.startswith('Unmatched publisher: ')
+                and velocity_cmd_only_mismatch([m.removeprefix('Unmatched publisher: ')]))]
+            self.message = self.messages[-1] if self.messages else ''
+            if not self.messages:
+                self.event.clear()
 
 
 class AuroraSession:
@@ -74,6 +90,7 @@ class AuroraSession:
         self._lock = threading.RLock()
         self._errors = _SdkErrors()
         self._loggers = []
+        self._pdstand_required = False
 
     @classmethod
     def real(cls, profile, *, execute=False, operator_confirmed=False):
@@ -97,6 +114,8 @@ class AuroraSession:
             raise RobotError(f'Aurora session closed/fault latched: {self.fault}; reconstruct/reconfirm in a new process')
 
     def _load_sdk(self):
+        if not self.simulation:
+            configure_dds_environment()  # Before importing the SDK or creating DDS.
         if self.sdk is None:
             try:
                 version = importlib.metadata.version('fourier_aurora_client')
@@ -106,7 +125,8 @@ class AuroraSession:
                 raise RobotError(f'unsupported SDK version {version}; requires 0.1.8; no automatic fallback')
             self.sdk = importlib.import_module('fourier_aurora_client')
         client_class = self.sdk.AuroraClient
-        required = ('get_instance', 'get_fsm_state', 'get_group_state', 'set_group_cmd', 'close')
+        required = ('get_instance', 'get_fsm_state', 'get_upper_fsm_state', 'get_stand_pose',
+                    'get_group_state', 'set_group_cmd', 'set_fsm_state', 'close')
         if not all(callable(getattr(client_class, name, None)) for name in required):
             raise RobotError('incompatible 0.1.8 API surface')
         if any(hasattr(client_class, name) for name in ('configure', 'start', 'register_lease')):
@@ -151,7 +171,9 @@ class AuroraSession:
                             logger = logging.getLogger(name)
                             logger.addHandler(self._errors)
                             self._loggers.append(logger)
-                    self.client = klass.get_instance(**self.profile.connection)
+                    self.client = initialize_client(
+                        klass, self.profile, accepted_velocity_mismatch=self._errors.accept_velocity_mismatch,
+                    )
                     if self.client is None:
                         raise RobotError('get_instance returned None: SDK initialization/discovery failed')
                     self._check_fault()
@@ -240,9 +262,55 @@ class AuroraSession:
 
     def _check_fsm(self):
         fsm = self._call('get_fsm_state')
-        if type(fsm) is not int or fsm not in self.profile.allowed_fsm:
+        if (type(fsm) is not int or fsm not in self.profile.allowed_fsm
+                or (self._pdstand_required and fsm != 2)):
             self.fault = f'FSM {fsm} is not in verified allowed_fsm'
             raise RobotError(self.fault)
+        if fsm == 2:
+            self._check_stand_pose()
+        elif fsm == 3 and self._call('get_upper_fsm_state') != 2:
+            raise RobotError('RL direct joint streaming requires UpperBodyTeleTask (upper FSM 2)')
+
+    def _check_stand_pose(self):
+        pose = self._call('get_stand_pose')
+        if (not isinstance(pose, (list, tuple)) or len(pose) != 4
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in pose)):
+            raise RobotError('get_stand_pose requires four finite values')
+        if pose[3] <= self.profile.minimum_stable_level:
+            raise RobotError(f'PdStand is not in stance stage: stable_level={pose[3]} must exceed {self.profile.minimum_stable_level}')
+
+    def prepare_control_mode(self, *, prepare_fsm=False, operator_confirmed=False):
+        """Standing streaming only: never switch to UserCmd/Upper UserCmd.
+
+        No MoveCommandManager here: sensor following uses immediate full-group
+        commands with application rate/step limits, without trajectory waits.
+        """
+        self._check_fault()
+        if not self.execute or not operator_confirmed:
+            raise RobotError('control preparation requires execute and explicit operator confirmation')
+        if 2 not in self.profile.allowed_fsm:
+            raise RobotError('standing streaming requires PdStand FSM 2 in profile.allowed_fsm')
+        self._pdstand_required = True
+        self.operator_confirmed = True
+        if prepare_fsm:
+            self._call('set_fsm_state', 2)
+        deadline = self.clock.monotonic() + self.profile.stable_wait_seconds
+        while True:
+            fsm = self._call('get_fsm_state')
+            if type(fsm) is not int:
+                raise RobotError('invalid FSM feedback')
+            if fsm == 2:
+                try:
+                    self._check_stand_pose()
+                    return
+                except RobotError:
+                    if self.clock.monotonic() >= deadline:
+                        raise
+            elif not prepare_fsm:
+                raise RobotError(f'standing streaming requires PdStand FSM 2; observed {fsm}; no FSM change requested')
+            if self.clock.monotonic() >= deadline:
+                raise RobotError('timed out waiting for PdStand FSM 2 and stance stage')
+            self.clock.sleep(min(0.05, max(0.0, deadline - self.clock.monotonic())))
 
     def enable(self, token):
         with self._lock:

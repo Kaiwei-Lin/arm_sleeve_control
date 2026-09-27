@@ -1,10 +1,9 @@
-# Python >=3.10. Run pip from the repository root so the local wheel resolves.
+# Python >=3.10. Estimator source is included in sleeve_arm/estimation/flexarm.
 PyYAML>=6
 pyserial>=3.5
 numpy>=1.23
 joblib>=1.2
 scikit-learn==1.7.2
-./flexarm_estimator-0.3.0-py3-none-any.whl
 
 # Optional Aurora 0.1.8 backend/diagnostics: install requirements-aurora.txt.
 # See docs/aurora_control.md and docs/aurora_sdk_environment.md.

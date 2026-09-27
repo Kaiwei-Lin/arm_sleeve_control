@@ -18,13 +18,8 @@ from sleeve_arm.config import (
 from sleeve_arm.estimation import UpperArmRotationEstimator
 from sleeve_arm.predictor import DualImuShoulderPredictor
 from sleeve_arm.sources import FakeImuSource, ImuSource, create_imu_source
-from tools.run_model_control import (
-    _add_latest_pair,
-    _collect_imu_pairs,
-    _pair_synchronizer,
-    _require_fresh_pair,
-    prepare_dual_imu_estimator,
-)
+from sleeve_arm.runtime.sensors import (_add_latest_pair, _pair_synchronizer, _require_fresh_pair)
+from sleeve_arm.runtime.intent_pipeline import (_collect_imu_pairs, prepare_dual_imu_estimator)
 
 
 def _pair_key(pair) -> tuple[int, int]:

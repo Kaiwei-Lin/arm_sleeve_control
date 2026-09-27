@@ -26,6 +26,16 @@ python tools/aurora_control.py doctor
 
 Aurora 0.1.8 没有 lease；enable 仅允许本应用发送，停止发布/关闭客户端不等于物理停止。DyMotor 原 connect 会执行厂家使能流程，其无 `--execute` 行为仍按下文说明处理。
 
+中文交互调试（无需 IMU/袖套）：
+
+```bash
+python tools/aurora_arm_debug.py --backend fake --simulate
+```
+
+输入 `右臂向上抬30度`、`右臂向后30度`、`状态` 或 `退出`。
+默认角度相对标定零位，`--reference current` 改为当前姿态增量。
+真实连接、profile 和反馈结果说明见 [中文手臂 SDK 调试](docs/aurora_arm_debug.md)。
+
 ## 项目当前阶段
 
 Phase 1 原有三个机械臂关节的位置控制与 PVCT 读取现已扩展加入大臂旋转电机。Phase 2 新增袖套、IMU、时间同步和数据记录。Phase 3/4 已接入 CH2 肘部规则、可切换的双 IMU/三柔性肩部方向与幅度估计，以及可选的 IMU3/4 大臂旋转；四个语义关节经同一个 Mapper、SafetyController 和 Robot command owner 下发。
@@ -197,9 +207,9 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-请在仓库根目录运行安装命令。`requirements.txt` 会同时安装项目 Python 运行依赖与仓库自带的 `flexarm_estimator-0.3.0-py3-none-any.whl`，无需另外手动安装 wheel。`requienment.txt` 是同一清单的兼容入口，亦可使用 `python -m pip install -r requienment.txt`。
+请在仓库根目录运行安装命令。估计器源码已迁入 `sleeve_arm/estimation/flexarm/`，无需安装 `flexarm-estimator` 包或 wheel，也不需要将相邻项目加入 `PYTHONPATH`。`requirements.txt` 仅安装通用 Python 依赖。`requienment.txt` 是同一清单的兼容入口，亦可使用 `python -m pip install -r requienment.txt`。
 
-开发与离线测试额外安装 `python -m pip install -r requirements-dev.txt`。wheel 支持 Python ≥3.10，固定使用 `scikit-learn==1.7.2`；三柔性传感器模型的训练权重仍需按配置另外提供，wheel 不包含权重。Aurora 真机 SDK/DDS 和 DyMotor native bridge 不属于这份通用 pip 清单，分别按对应硬件文档安装。
+开发与离线测试额外安装 `python -m pip install -r requirements-dev.txt`。项目使用 Python ≥3.10；双 IMU 估计器只需 NumPy，三柔性传感器模型还使用 joblib 和 `scikit-learn==1.7.2`。训练权重仍需按配置另外提供，源码迁移不包含权重。详见 [估计器源码迁移说明](docs/local_estimators.md)。Aurora 真机 SDK/DDS 和 DyMotor native bridge 不属于这份通用 pip 清单，分别按对应硬件文档安装。
 
 ### Aurora optional backend dependencies
 
@@ -213,7 +223,7 @@ python -m pip check
 python tools/aurora_sdk_doctor.py
 ```
 
-`requirements-aurora.txt` 只固定 `fourier_aurora_client==0.1.8`，不加入基础或开发依赖；项目运行依赖及本地 flexarm wheel 仍用 `python -m pip install -r requirements.txt` 安装。若默认源找不到固定版本，可执行 `python -m pip install --index-url https://pypi.org/simple "fourier_aurora_client==0.1.8"`，不要改装其他版本。没有 `skin` 的其他机器可先创建 `conda create -n aurora python=3.10 pip -y`，再 `conda activate aurora`。
+`requirements-aurora.txt` 只固定 `fourier_aurora_client==0.1.8`，不加入基础或开发依赖；项目通用运行依赖仍用 `python -m pip install -r requirements.txt` 安装。若默认源找不到固定版本，可执行 `python -m pip install --index-url https://pypi.org/simple "fourier_aurora_client==0.1.8"`，不要改装其他版本。没有 `skin` 的其他机器可先创建 `conda create -n aurora python=3.10 pip -y`，再 `conda activate aurora`。
 
 默认 doctor 只做 import、版本和方法签名检查，不创建 DDS session。显式只读连接命令为：
 
@@ -399,7 +409,7 @@ predictor:
 该方案复用 `sleeve_arm.predictor.DualImuShoulderPredictor`，底层 API 为：
 
 ```python
-from flexarm import DualImuArmEstimator
+from sleeve_arm.estimation.flexarm import DualImuArmEstimator
 
 estimator = DualImuArmEstimator(
     down_axis=(-1, 0, 0),
@@ -489,7 +499,7 @@ python tools/test_imu_motion.py --config configs/sensors.yaml --duration 60
 
 ### 集成验证与真机执行
 
-先用 fake source 验证选择分支；两种模式分别需要对应的 `flexarm` API，柔性模式还需要配置的模型文件：
+先用 fake source 验证选择分支；两种模式均使用仓库内的估计器源码，柔性模式还需要配置的模型文件：
 
 ```powershell
 python tools/run_model_control.py --shoulder-predictor dual_imu --sleeve fake --imus fake --robot fake --duration 5

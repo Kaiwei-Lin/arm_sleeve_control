@@ -14,7 +14,7 @@ from sleeve_arm.config import (
     load_sensor_config,
 )
 from sleeve_arm.sources import create_sleeve_source
-from tools.run_model_control import prepare_flexarm_predictor
+from sleeve_arm.runtime.intent_pipeline import prepare_flexarm_predictor
 
 
 def main(argv: list[str] | None = None) -> int:

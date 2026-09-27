@@ -24,7 +24,7 @@ from sleeve_arm.control.aurora_motion import AuroraMotionService, preview_joint
 from sleeve_arm.domain.joint import DYMOTOR_JOINT_NAMES, JOINT_NAMES
 from sleeve_arm.domain.motion import MotionIntent
 from sleeve_arm.robot.aurora import AuroraRobotArm
-from sleeve_arm.robot.aurora_fake import FakeAuroraClient, FakeClock, fake_profile, fake_session
+from sleeve_arm.robot.aurora_fake import FakeAuroraClient, FakeClock, fake_profile, fake_session, gr3_fake_profile
 from sleeve_arm.robot.aurora_profile import load_aurora_profile
 from sleeve_arm.robot.aurora_session import AuroraSession, SystemClock
 from sleeve_arm.robot.base import RobotError
@@ -509,7 +509,7 @@ def test_profile_roundtrip_and_unverified_template(tmp_path):
     raw=yaml.safe_load(path.read_text());raw['verified']='false';path.write_text(yaml.safe_dump(raw))
     with pytest.raises(ValueError,match='boolean'):load_aurora_profile(path)
     p=load_aurora_profile(ROOT/'configs/robot_aurora.yaml')
-    assert p.connection['domain_id'] is None and all(g.name is None and g.count is None for g in p.groups)
+    assert p.connection['domain_id'] == 123 and all(g.name == f'{g.side}_manipulator' and g.count == 7 for g in p.groups)
     with pytest.raises(ValueError,match='unverified'):p.validate(execute=True)
 
 
@@ -540,7 +540,7 @@ def test_default_cli_preview_never_loads_sdk(monkeypatch,capsys):
     monkeypatch.setattr(AuroraSession,'_load_sdk',lambda self:pytest.fail('SDK load'))
     assert aurora_control.main(['move','--side','left','--direction','forward','--angle-deg','10'])==0
     output=capsys.readouterr().out
-    assert 'NO MOTION' in output and '"group": null' in output
+    assert 'NO MOTION' in output and '"group": "left_manipulator"' in output
 
 
 def test_cli_fake_preview_and_bounded_simulation(capsys):
@@ -586,7 +586,7 @@ def test_model_entry_aurora_fake_routes_right_and_cleans_up(tmp_path, monkeypatc
         sensors["sensors"][name]["enabled"] = False
     sensor_file = tmp_path / "sensors.yaml"
     sensor_file.write_text(yaml.safe_dump(sensors))
-    session = fake_session(clock=SystemClock())
+    session = fake_session(clock=SystemClock(), profile=gr3_fake_profile())
     actual_factory = factory.create_robot
     def create(backend, config=None, **kwargs):
         return actual_factory(backend, config, session=session, **kwargs)
@@ -599,7 +599,7 @@ def test_model_entry_aurora_fake_routes_right_and_cleans_up(tmp_path, monkeypatc
                 raise ValueError("injected model failure")
             return MotionIntent(timestamp=sample.timestamp, shoulder_flexion_rad=0.03,
                                 model_action="Forward", angle_deg=2, confidence=1, inference_ms=0.1)
-    monkeypatch.setattr(run_model_control, "prepare_flexarm_predictor", lambda *a, **k: Predictor())
+    monkeypatch.setattr("sleeve_arm.runtime.intent_pipeline.prepare_flexarm_predictor", lambda *a, **k: Predictor())
     if mode == "sensor_timeout":
         monkeypatch.setattr("sleeve_arm.control.SensorWatchdog.is_stale", lambda *a: True)
     monkeypatch.setattr(sys, "argv", [
@@ -611,7 +611,7 @@ def test_model_entry_aurora_fake_routes_right_and_cleans_up(tmp_path, monkeypatc
     assert code == (0 if mode == "normal" else 1)
     assert session.closed
     assert "close" in session.client.calls
-    assert all(set(c) == {"FAKE_right_arm"} for c in session.client.commands)
+    assert all(set(c) == {"right_manipulator"} for c in session.client.commands)
     assert len(session.client.commands) > (1 if mode == "normal" else 0)
 
 
@@ -694,7 +694,7 @@ def test_invalid_domain_or_new_sdk_connection_fields_refused(kwargs):
 def test_model_arm_side_alias_dry_run_does_not_create_robot_or_sensors(monkeypatch,capsys):
     from tools import run_model_control
     monkeypatch.setattr('sleeve_arm.robot.factory.create_robot',lambda *a,**k:pytest.fail('factory'))
-    monkeypatch.setattr(run_model_control,'create_sleeve_source',lambda *a:pytest.fail('sensor'))
+    monkeypatch.setattr('sleeve_arm.runtime.sensors.create_sleeve_source',lambda *a:pytest.fail('sensor'))
     monkeypatch.setattr(sys,'argv',['run_model_control.py','--robot','aurora','--arm-side','right',
                                   '--source-side','right','--aurora-profile',str(ROOT/'configs/robot_aurora.yaml')])
     assert run_model_control.main()==0

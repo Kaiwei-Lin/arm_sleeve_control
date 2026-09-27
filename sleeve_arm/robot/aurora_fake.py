@@ -42,6 +42,17 @@ def fake_profile():
     )
 
 
+def gr3_fake_profile():
+    """Use the real GR3 layout with explicitly simulated calibration/limits."""
+    from pathlib import Path
+    from sleeve_arm.robot.aurora_profile import load_aurora_profile
+    profile = load_aurora_profile(Path(__file__).resolve().parents[2] / 'configs/robot_aurora.yaml')
+    groups = tuple(replace(g, verified=True, joints=tuple(replace(j, verified=True) for j in g.joints))
+                   for g in profile.groups)
+    return replace(profile, groups=groups, verified=True, simulated=True, authority_verified=True,
+                   allow_missing_velocity_cmd=False, verification_note='OFFLINE SIMULATION ONLY')
+
+
 class FakeAuroraClient:
     def __init__(self, profile=None, clock=None):
         self.profile = profile or fake_profile()
@@ -52,7 +63,9 @@ class FakeAuroraClient:
             for joint in group.joints:
                 vector[joint.index] = joint.to_sdk(0.)
             self.groups[group.name] = {'position': vector, 'velocity': [0.] * group.count, 'effort': []}
-        self.fsm = 42
+        self.fsm = self.profile.allowed_fsm[0] if self.profile.allowed_fsm else 0
+        self.upper_fsm = 0
+        self.stand_pose = [0.0, 0.0, 0.0, 101.0]
         self.closed = False
         self.close_count = 0
         self.calls = []
@@ -79,6 +92,18 @@ class FakeAuroraClient:
     def get_fsm_state(self) -> int:
         self._call('get_fsm_state')
         return self.fsm
+
+    def get_upper_fsm_state(self) -> int:
+        self._call('get_upper_fsm_state')
+        return self.upper_fsm
+
+    def get_stand_pose(self) -> list[float]:
+        self._call('get_stand_pose')
+        return self.stand_pose
+
+    def set_fsm_state(self, state: int):
+        self._call('set_fsm_state')
+        self.fsm = state
 
     def get_group_state(self, group_name: str, key: str = 'position') -> list[float]:
         self._call('get_group_state')

@@ -1,0 +1,21 @@
+{
+  "source_project": "arm_data_collector/flexarm_estimator",
+  "source_path": "src/flexarm",
+  "source_repository_head": "1cf3aff17996744377e7a7c287c8a556dfbcae3c",
+  "source_kind": "local working tree (includes uncommitted changes)",
+  "files_sha256": {
+    "__init__.py": "07fd9623987b70111dad1e80f0bed309396cbc8ab89aa4bc9c76a6db982a5299",
+    "action_classifier.py": "d964240ee3ae761054a534d559ea89c9e92663d593b4eabaec8b0e6c8d6ca16d",
+    "angle_estimator.py": "aaffebb5306d16cddb0c9238b2b740eba112736cc4a3de6c9be1b037be7e88d3",
+    "calibration.py": "88532fc32b0e68bcfff45e526b4f7064c50e790d1ae6cd466c15d1f4b0d94a54",
+    "config.py": "1e56365d2e6728f04ac88f88773837a4f54e4970c37fdd7e76f439d92ddac505",
+    "dual_imu.py": "116970dfcb083adbf0eabc7efd8599b76cdda8893c52dc75258d330c6493ce59",
+    "estimator.py": "22a20275765ce403f6753c7ebff41d2047282acdf78b9e8da5e9be8095bffe2d",
+    "features.py": "b641cbb1e1b50e458c73c760997a9a593ef912b32814444cd6897bcf88a46191",
+    "model_io.py": "fd42c0fccc68956ebc00070003ac3ba9d15a16f6579b1c8f6daf1569380173c1",
+    "motion_gate.py": "cda5fe1b8bed8716c49cdd581e4f4fecd5f8032910f17f0896d9c053e392668e",
+    "normalization.py": "5d387d65189c4ce93d9c40a6a15e463434e541d214ba19fd5ea0fe9f6cc97794",
+    "temporal_filter.py": "fd03e62d3ee63d9f21e7c275a117bd3bbaba8e001308899a3d2685612674d5d9",
+    "types.py": "ee0892f6a62653d2389a68a043329b5b2c8b8aab080fb125e1887b876f73641a"
+  }
+}

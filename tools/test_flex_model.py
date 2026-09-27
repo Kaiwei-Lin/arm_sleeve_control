@@ -109,7 +109,7 @@ def main() -> int:
             return replay(args.input, predictor)
         source = create_sleeve_source(load_sensor_config(args.sensor_config))
         source.start()
-        from tools.run_model_control import prepare_flexarm_predictor
+        from sleeve_arm.runtime.intent_pipeline import prepare_flexarm_predictor
 
         predictor = prepare_flexarm_predictor(
             source,

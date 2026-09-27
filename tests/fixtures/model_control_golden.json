@@ -1,0 +1,481 @@
+{
+  "baseline_head": "3c152f4552fbaaa723bae516e41a1ba573b0e150",
+  "baseline_normalized_sha256": "f5adc94b0481841b2cac9598b97ea57735bcb4e7db0f811a907320106f8e2a41",
+  "generation": "Original working-tree readiness prediction block; deterministic model outputs and perf_counter; real predictor/EMA/twist implementations.",
+  "inputs": [
+    {
+      "timestamp": 100.0,
+      "flex": 0,
+      "upper_deg": 0,
+      "reference_deg": 0
+    },
+    {
+      "timestamp": 100.01,
+      "flex": 0.2,
+      "upper_deg": 20,
+      "reference_deg": 5
+    },
+    {
+      "timestamp": 100.02,
+      "flex": 0.4,
+      "upper_deg": 40,
+      "reference_deg": 10
+    },
+    {
+      "timestamp": 100.03,
+      "flex": 1,
+      "upper_deg": 60,
+      "reference_deg": 15
+    },
+    {
+      "timestamp": 100.04,
+      "flex": 2,
+      "upper_deg": 80,
+      "reference_deg": 20
+    },
+    {
+      "timestamp": 100.05,
+      "flex": 0,
+      "upper_deg": 100,
+      "reference_deg": 25
+    }
+  ],
+  "startup": {
+    "shoulder_flexion": 0.01,
+    "shoulder_abduction": 0.02,
+    "elbow_flexion": 0.03,
+    "upper_arm_rotation": 0.04
+  },
+  "cases": {
+    "dual_imu": {
+      "estimator_results": [
+        {
+          "direction": "Rest",
+          "magnitude_deg": 0.0,
+          "confidence": 0.9
+        },
+        {
+          "direction": "Forward",
+          "magnitude_deg": 10.0,
+          "confidence": 0.9
+        },
+        {
+          "direction": "Transition",
+          "magnitude_deg": 20.0,
+          "confidence": 0.9
+        },
+        {
+          "direction": "Lateral",
+          "magnitude_deg": 30.0,
+          "confidence": 0.9
+        },
+        {
+          "direction": "Backward",
+          "magnitude_deg": 40.0,
+          "confidence": 0.9
+        },
+        {
+          "direction": "Rest",
+          "magnitude_deg": 50.0,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "intent": {
+            "timestamp": 100.0,
+            "elbow_flexion": 0.0,
+            "shoulder_flexion_rad": 0.0,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.0,
+            "action": null,
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 0.0,
+            "inference_ms": 0.0,
+            "model_action": "Rest",
+            "angle_confidence": null,
+            "moving": false
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.0,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.0,
+            "upper_arm_rotation": 0.0
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.0,
+            "shoulder_flexion": 0.0,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.0
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.01,
+            "elbow_flexion": 0.031415926535897934,
+            "shoulder_flexion_rad": 0.17453292519943295,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.030543261909900768,
+            "action": "FORWARD",
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 10.0,
+            "inference_ms": 0.0,
+            "model_action": "Forward",
+            "angle_confidence": null,
+            "moving": true
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.17453292519943295,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.031415926535897934,
+            "upper_arm_rotation": 0.030543261909900768
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.031415926535897934,
+            "shoulder_flexion": 0.17453292519943295,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.030543261909900768
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.02,
+            "elbow_flexion": 0.08796459430051423,
+            "shoulder_flexion_rad": 0.17453292519943295,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.08093964406123705,
+            "action": null,
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 20.0,
+            "inference_ms": 0.0,
+            "model_action": "Transition",
+            "angle_confidence": null,
+            "moving": true
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.17453292519943295,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.08796459430051423,
+            "upper_arm_rotation": 0.08093964406123705
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.08796459430051423,
+            "shoulder_flexion": 0.17453292519943295,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.08093964406123705
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.03,
+            "elbow_flexion": 0.22745130811990105,
+            "shoulder_flexion_rad": 0.0,
+            "shoulder_abduction_rad": 0.5235987755982988,
+            "upper_arm_rotation_rad": 0.14424055436950653,
+            "action": "LATERAL",
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 30.0,
+            "inference_ms": 0.0,
+            "model_action": "Lateral",
+            "angle_confidence": null,
+            "moving": true
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.0,
+            "shoulder_abduction": 0.5235987755982988,
+            "elbow_flexion": 0.22745130811990105,
+            "upper_arm_rotation": 0.14424055436950653
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.22745130811990105,
+            "shoulder_flexion": 0.0,
+            "shoulder_abduction": 0.5235987755982988,
+            "upper_arm_rotation": 0.14424055436950653
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.04,
+            "elbow_flexion": 0.49612031185490013,
+            "shoulder_flexion_rad": -0.6981317007977318,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.21592940797978227,
+            "action": "BACKWARD",
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 40.0,
+            "inference_ms": 0.0,
+            "model_action": "Backward",
+            "angle_confidence": null,
+            "moving": true
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": -0.6981317007977318,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.49612031185490013,
+            "upper_arm_rotation": 0
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.49612031185490013,
+            "shoulder_flexion": -0.6981317007977318,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.21592940797978227
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.05,
+            "elbow_flexion": 0.39689624948392016,
+            "shoulder_flexion_rad": 0.0,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.2930704247363626,
+            "action": null,
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 50.0,
+            "inference_ms": 0.0,
+            "model_action": "Rest",
+            "angle_confidence": null,
+            "moving": false
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.0,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.39689624948392016,
+            "upper_arm_rotation": 0
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.39689624948392016,
+            "shoulder_flexion": 0.0,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.2930704247363626
+          }
+        }
+      ]
+    },
+    "flexarm_estimator": {
+      "estimator_results": [
+        {
+          "action": "Rest",
+          "angle_deg": 0.0,
+          "action_confidence": 0.9,
+          "angle_confidence": 0.8,
+          "moving": false
+        },
+        {
+          "action": "Forward",
+          "angle_deg": 10.0,
+          "action_confidence": 0.9,
+          "angle_confidence": 0.8,
+          "moving": true
+        },
+        {
+          "action": "Unknown",
+          "angle_deg": 20.0,
+          "action_confidence": 0.9,
+          "angle_confidence": 0.8,
+          "moving": true
+        },
+        {
+          "action": "Lateral",
+          "angle_deg": 30.0,
+          "action_confidence": 0.9,
+          "angle_confidence": 0.8,
+          "moving": true
+        },
+        {
+          "action": "Backward",
+          "angle_deg": 40.0,
+          "action_confidence": 0.9,
+          "angle_confidence": 0.8,
+          "moving": true
+        },
+        {
+          "action": "Rest",
+          "angle_deg": 50.0,
+          "action_confidence": 0.9,
+          "angle_confidence": 0.8,
+          "moving": false
+        }
+      ],
+      "expected": [
+        {
+          "intent": {
+            "timestamp": 100.0,
+            "elbow_flexion": 0.0,
+            "shoulder_flexion_rad": null,
+            "shoulder_abduction_rad": null,
+            "upper_arm_rotation_rad": 0.0,
+            "action": null,
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 0.0,
+            "inference_ms": 0.0,
+            "model_action": "Rest",
+            "angle_confidence": 0.8,
+            "moving": false
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.01,
+            "shoulder_abduction": 0.02,
+            "elbow_flexion": 0.0,
+            "upper_arm_rotation": 0.0
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.0,
+            "upper_arm_rotation": 0.0
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.01,
+            "elbow_flexion": 0.031415926535897934,
+            "shoulder_flexion_rad": 0.17453292519943295,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.030543261909900768,
+            "action": "FORWARD",
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 10.0,
+            "inference_ms": 0.0,
+            "model_action": "Forward",
+            "angle_confidence": 0.8,
+            "moving": true
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.17453292519943295,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.031415926535897934,
+            "upper_arm_rotation": 0.030543261909900768
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.031415926535897934,
+            "shoulder_flexion": 0.17453292519943295,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.030543261909900768
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.02,
+            "elbow_flexion": 0.08796459430051423,
+            "shoulder_flexion_rad": 0.17453292519943295,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.08093964406123705,
+            "action": null,
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 20.0,
+            "inference_ms": 0.0,
+            "model_action": "Unknown",
+            "angle_confidence": 0.8,
+            "moving": true
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.17453292519943295,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.08796459430051423,
+            "upper_arm_rotation": 0.08093964406123705
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.08796459430051423,
+            "shoulder_flexion": 0.17453292519943295,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.08093964406123705
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.03,
+            "elbow_flexion": 0.22745130811990105,
+            "shoulder_flexion_rad": 0.0,
+            "shoulder_abduction_rad": 0.5235987755982988,
+            "upper_arm_rotation_rad": 0.14424055436950653,
+            "action": "LATERAL",
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 30.0,
+            "inference_ms": 0.0,
+            "model_action": "Lateral",
+            "angle_confidence": 0.8,
+            "moving": true
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": 0.0,
+            "shoulder_abduction": 0.5235987755982988,
+            "elbow_flexion": 0.22745130811990105,
+            "upper_arm_rotation": 0.14424055436950653
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.22745130811990105,
+            "shoulder_flexion": 0.0,
+            "shoulder_abduction": 0.5235987755982988,
+            "upper_arm_rotation": 0.14424055436950653
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.04,
+            "elbow_flexion": 0.49612031185490013,
+            "shoulder_flexion_rad": -0.6981317007977318,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.21592940797978227,
+            "action": "BACKWARD",
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 40.0,
+            "inference_ms": 0.0,
+            "model_action": "Backward",
+            "angle_confidence": 0.8,
+            "moving": true
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": -0.6981317007977318,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.49612031185490013,
+            "upper_arm_rotation": 0
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.49612031185490013,
+            "shoulder_flexion": -0.6981317007977318,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.21592940797978227
+          }
+        },
+        {
+          "intent": {
+            "timestamp": 100.05,
+            "elbow_flexion": 0.39689624948392016,
+            "shoulder_flexion_rad": -0.6981317007977318,
+            "shoulder_abduction_rad": 0.0,
+            "upper_arm_rotation_rad": 0.2930704247363626,
+            "action": null,
+            "confidence": 0.9,
+            "action_probabilities": null,
+            "angle_deg": 50.0,
+            "inference_ms": 0.0,
+            "model_action": "Rest",
+            "angle_confidence": 0.8,
+            "moving": false
+          },
+          "dymotor_targets": {
+            "shoulder_flexion": -0.6981317007977318,
+            "shoulder_abduction": 0.0,
+            "elbow_flexion": 0.39689624948392016,
+            "upper_arm_rotation": 0
+          },
+          "aurora_targets": {
+            "elbow_flexion": 0.39689624948392016,
+            "shoulder_flexion": -0.6981317007977318,
+            "shoulder_abduction": 0.0,
+            "upper_arm_rotation": 0.2930704247363626
+          }
+        }
+      ]
+    }
+  }
+}

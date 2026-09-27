@@ -13,6 +13,13 @@ from sleeve_arm.control.parameters import ControlConfig, JointSafetyParameters
 API_FAMILY = 'aurora-python-dds-0.1.8'
 SDK_VERSION = '0.1.8'
 
+# Verified GR3 physical order, distinct from the application's semantic names.
+GR3_ARM_JOINT_ORDER = ('shoulder_pitch', 'shoulder_roll', 'shoulder_yaw', 'elbow_pitch',
+                      'wrist_yaw', 'wrist_pitch', 'wrist_roll')
+GR3_SEMANTIC_INDICES = dict(shoulder_flexion=0, shoulder_abduction=1,
+                            upper_arm_rotation=2, elbow_flexion=3,
+                            wrist_yaw=4, wrist_pitch=5, wrist_roll=6)
+
 
 def finite(value, label, *, positive=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -94,6 +101,9 @@ class AuroraRobotProfile:
     verification_note: str = ''
     robot_type: str | None = None
     authority_verified: bool = False
+    allow_missing_velocity_cmd: bool = False
+    minimum_stable_level: float = 100.0
+    stable_wait_seconds: float = 3.0
 
     @property
     def control_period_s(self):
@@ -112,7 +122,7 @@ class AuroraRobotProfile:
     def validate(self, *, execute=False, simulation=False, groups=None):
         if self.api_family != API_FAMILY or self.sdk_version != SDK_VERSION:
             raise ValueError(f'unsupported api_family/version {self.api_family}/{self.sdk_version}; only 0.1.8, no fallback')
-        for name in ('verified', 'simulated', 'authority_verified'):
+        for name in ('verified', 'simulated', 'authority_verified', 'allow_missing_velocity_cmd'):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f'{name} must be boolean')
         if set(self.connection) - {'domain_id', 'robot_name', 'namespace', 'is_ros_compatible'}:
@@ -126,7 +136,9 @@ class AuroraRobotProfile:
         ros = self.connection.get('is_ros_compatible')
         if ros is not None and type(ros) is not bool:
             raise ValueError('is_ros_compatible must be boolean or null')
-        for name in ('feedback_timeout_s', 'endpoint_timeout_s', 'arrival_timeout_s'):
+        if finite(self.minimum_stable_level, 'minimum_stable_level') < 100:
+            raise ValueError('standing GR3 streaming requires minimum_stable_level >= 100')
+        for name in ('feedback_timeout_s', 'endpoint_timeout_s', 'arrival_timeout_s', 'stable_wait_seconds'):
             if finite(getattr(self, name), name, positive=True) > 60:
                 raise ValueError(f'{name} must be <= 60 seconds')
         if self.control_hz is not None:
@@ -138,6 +150,11 @@ class AuroraRobotProfile:
             raise ValueError('allowed_fsm must be nonnegative integer IDs')
         names, slots = set(), set()
         for group in self.groups:
+            if self.robot_type == 'GR3' and group.part == 'arm':
+                if group.name != f'{group.side}_manipulator' or group.count != 7:
+                    raise ValueError('GR3 arm requires the sided manipulator group with 7 DoF')
+                if any(j.index != GR3_SEMANTIC_INDICES.get(j.name) for j in group.joints):
+                    raise ValueError('GR3 semantic joint index differs from verified physical order')
             if group.side not in ('left', 'right') or group.part not in ('arm', 'hand'):
                 raise ValueError('invalid side/part')
             if (group.side, group.part) in slots or (group.name is not None and group.name in names):

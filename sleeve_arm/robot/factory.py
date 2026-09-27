@@ -22,8 +22,8 @@ def create_robot(backend: str, config=None, *, profile=None, side=None, sides=No
     selected = tuple(sides) if sides is not None else ((side,) if side is not None else ())
     if session is None:
         if backend == "aurora-fake":
-            from sleeve_arm.robot.aurora_fake import fake_session
-            session = fake_session(execute=execute, clock=SystemClock())
+            from sleeve_arm.robot.aurora_fake import fake_session, gr3_fake_profile
+            session = fake_session(execute=execute, clock=SystemClock(), profile=gr3_fake_profile())
         else:
             if profile is None:
                 raise ValueError("Aurora requires an explicit profile")

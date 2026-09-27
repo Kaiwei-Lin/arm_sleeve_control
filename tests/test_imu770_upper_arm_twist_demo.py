@@ -465,14 +465,24 @@ def test_csv_recorder_writes_raw_and_both_estimator_results(tmp_path: object) ->
 
 
 class SlowDisconnectSerial(FakeSerial):
+    def __init__(self, chunks, recording_complete):
+        super().__init__(chunks)
+        self.recording_complete = recording_complete
+        self.tid = 0
+        self.deadline = time.monotonic() + 3.0
+
     def read(self, size: int) -> bytes:
         time.sleep(0.001)
+        if self.recording_complete.is_set() or time.monotonic() >= self.deadline:
+            raise OSError("test stream ended")
+        self.tid += 1
         if self.chunks:
             return self.chunks.popleft()
-        raise OSError("test stream ended")
+        # Keep calibration supplied until the first real live CSV row is written.
+        return make_imu770_frame(self.tid, _vector_tlv(0x41, 1_000_000, 0, 0, 0))
 
 
-def test_run_calibrates_records_live_pairs_and_closes_both_ports(tmp_path: object, capsys: object) -> None:
+def test_run_calibrates_records_live_pairs_and_closes_both_ports(tmp_path: object, capsys: object, monkeypatch) -> None:
     path = tmp_path / "live.csv"  # type: ignore[operator]
     upper_frames = [
         make_imu770_frame(tid, _vector_tlv(0x41, 1_000_000, 0, 0, 0)) for tid in range(1, 81)
@@ -480,10 +490,18 @@ def test_run_calibrates_records_live_pairs_and_closes_both_ports(tmp_path: objec
     forearm_frames = [
         make_imu770_frame(tid, _vector_tlv(0x41, 1_000_000, 0, 0, 0)) for tid in range(1, 81)
     ]
+    recording_complete = threading.Event()
     serial_ports = {
-        "COM5": SlowDisconnectSerial(upper_frames),
-        "COM6": SlowDisconnectSerial(forearm_frames),
+        "COM5": SlowDisconnectSerial(upper_frames, recording_complete),
+        "COM6": SlowDisconnectSerial(forearm_frames, recording_complete),
     }
+    original_write = demo.CsvRecorder.write
+
+    def write_then_disconnect(recorder, *values):
+        original_write(recorder, *values)
+        recording_complete.set()
+
+    monkeypatch.setattr(demo.CsvRecorder, "write", write_then_disconnect)
 
     def factory(**kwargs: object) -> SlowDisconnectSerial:
         return serial_ports[str(kwargs["port"])]

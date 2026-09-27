@@ -42,12 +42,12 @@ class FlexModelPredictor(MotionPredictor):
 
     def _load_model(self) -> Any:
         try:
-            module = importlib.import_module("flexarm")
+            module = importlib.import_module("sleeve_arm.estimation.flexarm")
             estimator_class = getattr(module, "FlexArmEstimator")
             return estimator_class.from_pretrained(self.config.model_dir)
         except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             raise RuntimeError(
-                "FlexArmEstimator could not be imported; install the flexarm-estimator wheel"
+                "Local FlexArmEstimator could not be imported; check dependencies in requirements.txt"
             ) from exc
         except Exception as exc:
             raise RuntimeError(
@@ -142,7 +142,7 @@ class FlexModelPredictor(MotionPredictor):
 
     def reuse_calibration(self, path: Path) -> None:
         try:
-            calibration_module = importlib.import_module("flexarm.calibration")
+            calibration_module = importlib.import_module("sleeve_arm.estimation.flexarm.calibration")
             calibration = calibration_module.FlexCalibration.load(path)
             artifacts = replace(
                 self._estimator.artifacts,

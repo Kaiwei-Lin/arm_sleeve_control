@@ -33,7 +33,8 @@ from sleeve_arm.robot import FakeRobotArm
 from sleeve_arm.sync import SensorSynchronizer
 from tools.debug_model_mapping import manual_intent
 from tools import run_manual_model_control, run_model_control
-from tools.run_model_control import _add_latest_pair, prepare_flexarm_predictor
+from sleeve_arm.runtime.sensors import _add_latest_pair
+from sleeve_arm.runtime.intent_pipeline import prepare_flexarm_predictor
 from tools.test_flex_model import replay, run_live
 
 
@@ -466,12 +467,11 @@ def test_manual_runtime_accepts_absolute_upper_arm_rotation(monkeypatch, capsys)
     assert "mapper target:      0.174533 rad" in output
 
 
-def test_robot_connect_precedes_sensor_and_external_model_initialization() -> None:
-    runtime = inspect.getsource(run_model_control.main)
-    assert runtime.index("controller.connect()") < runtime.index("source.start()")
-    assert runtime.index("controller.connect()") < runtime.index("prepare_dual_imu_estimator(")
-    assert runtime.index("controller.connect()") < runtime.index("prepare_flexarm_predictor(")
-    assert "args.shoulder_predictor or phase4.predictor_backend" in runtime
+def test_entry_composes_runtimes_without_hardware_details() -> None:
+    runtime = inspect.getsource(run_model_control)
+    for forbidden in ("DyMotorArm", "AuroraIntentMapper", "set_group_cmd", "robot.session", "operator_confirmed"):
+        assert forbidden not in runtime
+    assert "app.run()" in runtime
 
 
 def test_run_model_control_selects_three_flex_predictor_without_shoulder_imus(
@@ -548,7 +548,7 @@ phase4_validation:
 
     monkeypatch.setitem(
         sys.modules,
-        "flexarm",
+        "sleeve_arm.estimation.flexarm",
         SimpleNamespace(FlexArmEstimator=RuntimeFlexArmEstimator),
     )
     monkeypatch.setattr("builtins.input", lambda _: "")
@@ -828,7 +828,7 @@ def test_predictor_reuses_saved_calibration_with_loaded_artifacts(
 
     monkeypatch.setitem(
         sys.modules,
-        "flexarm.calibration",
+        "sleeve_arm.estimation.flexarm.calibration",
         SimpleNamespace(FlexCalibration=FlexCalibration),
     )
     estimator = ReloadableEstimator(Artifacts(old_calibration))

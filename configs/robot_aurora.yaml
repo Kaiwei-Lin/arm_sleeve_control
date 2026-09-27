@@ -1,131 +1,166 @@
-# NEEDS_HARDWARE_VALIDATION. No hardware values are assumed.
-# sign=direction; zero=zero_position; count=expected_dof. See docs/aurora_control.md.
-# Timeout defaults are software diagnostics only, not verified hardware settings.
+# GR3 layout/SDK limits from electronic_skin_project reference demo and Fourier.
+# Physical order: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow_pitch,
+#                 wrist_yaw, wrist_pitch, wrist_roll.
+# verified=false: semantic signs/zero and conservative software motion limits
+# MUST still be checked on this installation. Especially upper-arm rotation sign.
+# This template does not authorize motion; fill verification/authority fields
+# and group/joint verified flags only after deployment validation.
 api_family: aurora-python-dds-0.1.8
 sdk_version: 0.1.8
 verified: false
 simulated: false
 verification_note: ''
-robot_type: null
+robot_type: GR3
 authority_verified: false
 connection:
-  domain_id: null
-  robot_name: null
-  namespace: null
-  is_ros_compatible: null
-allowed_fsm: []
-control_hz: null
+  domain_id: 123
+  robot_name: gr3
+  is_ros_compatible: false
+allowed_fsm:
+- 2
+control_hz: 100.0
 feedback_timeout_s: 0.25
 endpoint_timeout_s: 5.0
 arrival_timeout_s: 3.0
-arrival_tolerance_rad: null
-stop_policy: null
+arrival_tolerance_rad: 0.02
+stop_policy: stop_publishing
 groups:
-- name: null
+- name: left_manipulator
   side: left
   part: arm
-  count: null
+  count: 7
   verified: false
   capabilities:
   - joint_position
-  sdk_position_limits: null
-  max_tracking_error: null
+  sdk_position_limits:
+  - - -2.9671
+    - 2.9671
+  - - -0.2618
+    - 1.9199
+  - - -1.8326
+    - 1.8326
+  - - -2.2689
+    - 0.087266
+  - - -1.8326
+    - 1.8326
+  - - -0.87266
+    - 1.309
+  - - -1.0472
+    - 1.2217
+  max_tracking_error: 0.2
   joints:
   - name: shoulder_flexion
-    index: null
-    sign: null
-    zero: null
+    index: 0
+    sign: -1
+    zero: 0.0
     verified: false
     limits:
-      min_position: null
-      max_position: null
-      max_velocity: null
-      max_position_step: null
-      max_tracking_error: null
+      min_position: -2.9671
+      max_position: 2.9671
+      max_velocity: 0.3
+      max_position_step: 0.01
+      max_tracking_error: 0.2
   - name: shoulder_abduction
-    index: null
-    sign: null
-    zero: null
+    index: 1
+    sign: 1
+    zero: 0.0
     verified: false
     limits:
-      min_position: null
-      max_position: null
-      max_velocity: null
-      max_position_step: null
-      max_tracking_error: null
+      min_position: -0.2618
+      max_position: 1.9199
+      max_velocity: 0.3
+      max_position_step: 0.01
+      max_tracking_error: 0.2
   - name: upper_arm_rotation
-    index: null
-    sign: null
-    zero: null
+    index: 2
+    sign: 1
+    zero: 0.0
     verified: false
     limits:
-      min_position: null
-      max_position: null
-      max_velocity: null
-      max_position_step: null
-      max_tracking_error: null
+      min_position: -1.8326
+      max_position: 1.8326
+      max_velocity: 0.3
+      max_position_step: 0.01
+      max_tracking_error: 0.2
   - name: elbow_flexion
-    index: null
-    sign: null
-    zero: null
+    index: 3
+    sign: -1
+    zero: 0.0
     verified: false
     limits:
-      min_position: null
-      max_position: null
-      max_velocity: null
-      max_position_step: null
-      max_tracking_error: null
-- name: null
+      min_position: -0.087266
+      max_position: 2.2689
+      max_velocity: 0.3
+      max_position_step: 0.01
+      max_tracking_error: 0.2
+- name: right_manipulator
   side: right
   part: arm
-  count: null
+  count: 7
   verified: false
   capabilities:
   - joint_position
-  sdk_position_limits: null
-  max_tracking_error: null
+  sdk_position_limits:
+  - - -2.9671
+    - 2.9671
+  - - -1.9199
+    - 0.2618
+  - - -1.8326
+    - 1.8326
+  - - -2.2689
+    - 0.087266
+  - - -1.8326
+    - 1.8326
+  - - -0.87266
+    - 1.309
+  - - -1.2217
+    - 1.0472
+  max_tracking_error: 0.2
   joints:
   - name: shoulder_flexion
-    index: null
-    sign: null
-    zero: null
+    index: 0
+    sign: -1
+    zero: 0.0
     verified: false
     limits:
-      min_position: null
-      max_position: null
-      max_velocity: null
-      max_position_step: null
-      max_tracking_error: null
+      min_position: -2.9671
+      max_position: 2.9671
+      max_velocity: 0.3
+      max_position_step: 0.01
+      max_tracking_error: 0.2
   - name: shoulder_abduction
-    index: null
-    sign: null
-    zero: null
+    index: 1
+    sign: -1
+    zero: 0.0
     verified: false
     limits:
-      min_position: null
-      max_position: null
-      max_velocity: null
-      max_position_step: null
-      max_tracking_error: null
+      min_position: -0.2618
+      max_position: 1.9199
+      max_velocity: 0.3
+      max_position_step: 0.01
+      max_tracking_error: 0.2
   - name: upper_arm_rotation
-    index: null
-    sign: null
-    zero: null
+    index: 2
+    sign: 1
+    zero: 0.0
     verified: false
     limits:
-      min_position: null
-      max_position: null
-      max_velocity: null
-      max_position_step: null
-      max_tracking_error: null
+      min_position: -1.8326
+      max_position: 1.8326
+      max_velocity: 0.3
+      max_position_step: 0.01
+      max_tracking_error: 0.2
   - name: elbow_flexion
-    index: null
-    sign: null
-    zero: null
+    index: 3
+    sign: -1
+    zero: 0.0
     verified: false
     limits:
-      min_position: null
-      max_position: null
-      max_velocity: null
-      max_position_step: null
-      max_tracking_error: null
+      min_position: -0.087266
+      max_position: 2.2689
+      max_velocity: 0.3
+      max_position_step: 0.01
+      max_tracking_error: 0.2
+allow_missing_velocity_cmd: true
+minimum_stable_level: 100
+stable_wait_seconds: 3.0

@@ -2,6 +2,35 @@
 
 当前 backend 固定使用 **`fourier_aurora_client==0.1.8`**，不调用 1.0.1 的 configure/start/lease API。已实现左右臂具名关节、方向角度、有限摆臂、默认 preview、fake 和模型控制入口。本次只做离线验收；**没有启动真实 DDS，没有运行真机 connect/execute，也没有确认现场控制可用。** 未验证模板会阻止真实 execute。
 
+2026-09-26 的 model control 重构以 Fourier GR3 官方资料和
+`electronic_skin_project` master `21d7c2970aa05ee569676372ead49ab07333d360`
+的已验证 backend/demo/bridge 为依据；逐页资料链接与职责审计见
+[model_control_architecture.md](model_control_architecture.md)。
+
+中文交互式单关节调试现由 `tools/aurora_arm_debug.py` 提供，支持“右臂向上抬30度”、
+“右臂向后30度”、状态查看及反馈到位报告。它复用本文的 direct streaming 控制层，
+不依赖袖套/IMU。运行方式与角度定义见 [中文手臂 SDK 调试](aurora_arm_debug.md)。
+
+## 两条不同的控制路径
+
+| 路径 | API | 适用场景 / 状态 |
+| --- | --- | --- |
+| Streaming | `get_group_state` + `set_group_cmd` | 每个新 sensor sample 更新目标；当前站立遥操作使用 PdStand/FSM 2，`stable_level > 100` |
+| Discrete motion | `MoveCommandManager` + `set_move_command`，必要时 `wait_groups_motion_complete` | 固定姿态、离散动作；官方示例为全身 FSM 3 / 上身 FSM 4 |
+
+MoveCommand 提供自身轨迹规划、速度规划和完成跟踪。实时 IMU 循环每帧重启
+规划或等待完成会阻塞采样、积压目标，因此 model control 只使用 streaming。
+现有 `aurora_control.py` / `UpperLimbService` 仍是应用层插值后的 direct streaming，
+不是 MoveCommand API；本次未增加新的离散 MoveCommand 工具。
+
+`RobotRuntime.prepare()` 在真实执行前要求准确输入 `YES`，随后由
+`AuroraRobotArm.prepare_control_mode()` 检查全身 FSM 和站立稳定度。
+默认不切换 FSM；显式 `--prepare-aurora-fsm --execute` 才允许在确认后调用
+`set_fsm_state(2)`，并有界等待 FSM 2 和稳定度超过 profile 阈值。
+准备失败不发送 group command。enable、反馈健康检查和每次发送前重新检查。
+不调用 `set_upper_fsm_state`，不自动进入 UserCmd/FSM 10 或 Upper UserCmd/FSM 11；
+后者会令下肢进入零扭矩，不能作为普通站立遥操作默认值。
+
 ## 安装与版本依据
 
 在 WSL/Linux 终端、项目根目录执行：
@@ -14,16 +43,18 @@ python -m pip check
 python tools/aurora_sdk_doctor.py
 ```
 
-本机是 Ubuntu 22.04 / WSL2 / x86_64，解释器 `/home/lkw/miniconda3/envs/skin/bin/python`，Python 3.10.20。0.1.8 wheel 内含 Linux ELF 原生库；未验证原生 Windows/ARM。SDK 是可选依赖，缺失时 fake、DyMotor、传感器与 `--help` 仍可使用；不会自动安装、升级或修改 SDK、DDS 环境变量或 LD_LIBRARY_PATH。
+本机是 Ubuntu 22.04 / WSL2 / x86_64，解释器 `/home/lkw/miniconda3/envs/skin/bin/python`，Python 3.10.20。0.1.8 wheel 内含 Linux ELF 原生库；未验证原生 Windows/ARM。SDK 是可选依赖，缺失时 fake、DyMotor、传感器与 `--help` 仍可使用；不会自动安装、升级或修改 site-packages、LD_LIBRARY_PATH。真实 backend 初始化前按已验证项目设置 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`、`FOURIERDDS_ROS_COMPATIBLE=false`、`FOURIERDDS_USE_DISCOVERY_SERVER=false`。
 
-实际安装/API 审计见 [aurora_sdk_environment.md](aurora_sdk_environment.md)。本轮起始项目 HEAD 为 `edfedf272c4bf9e11c67a0631b162ba3a9d42de4`，保留已有修改，未切分支、reset、stash、提交或 push。当前官方 main 为另一套 1.0.1 API；本轮依据是 **PyPI 0.1.8 的实际安装源码及方法签名**，并核对官方历史 revision `b434869719ae256d02d8285e88ea2b22c1515602` 的 [API 文档](https://github.com/FFTAI/fourier_aurora_sdk/blob/b434869719ae256d02d8285e88ea2b22c1515602/python/docs/API_document_EN.md)、[GR3 关节示例](https://github.com/FFTAI/fourier_aurora_sdk/blob/b434869719ae256d02d8285e88ea2b22c1515602/python/example/gr3/demo_joint_command.py)。没有运行这些示例。
+实际安装/API 审计见 [aurora_sdk_environment.md](aurora_sdk_environment.md)。先前 SDK 审计起始 HEAD 为 `edfedf272c4bf9e11c67a0631b162ba3a9d42de4`，保留已有修改，未切分支、reset、stash、提交或 push。先前审计所见官方 main 为另一套 1.0.1 API；该阶段依据是 **PyPI 0.1.8 的实际安装源码及方法签名**，并核对官方历史 revision `b434869719ae256d02d8285e88ea2b22c1515602` 的 [API 文档](https://github.com/FFTAI/fourier_aurora_sdk/blob/b434869719ae256d02d8285e88ea2b22c1515602/python/docs/API_document_EN.md)、[GR3 关节示例](https://github.com/FFTAI/fourier_aurora_sdk/blob/b434869719ae256d02d8285e88ea2b22c1515602/python/example/gr3/demo_joint_command.py)。没有运行这些示例。
 
 | 实际 SDK 调用 | 参数、返回和限制 |
 |---|---|
 | `AuroraClient.get_instance(domain_id, participant_qos=None, robot_name=None, namespace=None, is_ros_compatible=None)` | domain 必填。配置支持 domain、robot_name、namespace、ROS 命名；不猜网络字段。初始化失败有时记录日志并返回 None，adapter 明确拒绝 |
-| `client.get_fsm_state()` | 返回整数 FSM；可能 KeyError；每次命令前重新检查，不切换 FSM |
+| `client.get_fsm_state()` / `get_upper_fsm_state()` | 返回整数 FSM；可能 KeyError；每次命令前重新检查允许模式 |
+| `client.get_stand_pose()` | `[delta_z, delta_pitch, delta_yaw, stable_level]`，PdStand 要求第四项严格超过阈值，默认 100 |
+| `client.set_fsm_state(2)` | 仅显式 prepare 选项且操作员确认后使用；随后等待状态和稳定度 |
 | `client.get_group_state(group_name, key='position')` | 返回缓存的 **list[float]**；key 为 position/velocity/effort。不存在组/key 时 KeyError。没有 timestamp 或 SDK OperationResult |
-| `client.set_group_cmd(position_cmd, velocity_cmd=None, torque_cmd=None)` | `dict[str, list[float]]`：组名映射完整向量。本项目只提供 position_cmd，不发送速度、力矩、FSM 或增益命令 |
+| `client.set_group_cmd(position_cmd, velocity_cmd=None, torque_cmd=None)` | `dict[str, list[float]]`：组名映射完整向量。本项目只提供 position_cmd，不发送速度、力矩或增益命令 |
 | `client.close()` | 返回 None，关闭本应用客户端，不是 Servo Off/急停。SDK 单例没有公开 reset 接口 |
 
 业务和安全层单位是 rad，速度为 rad/s。SDK 的 position 数组不做 degree 转换；历史 [GR2 步行示例](https://github.com/FFTAI/fourier_aurora_sdk/blob/b434869719ae256d02d8285e88ea2b22c1515602/python/example/gr2/demo_walk.py) 将传给关节位置命令的 policy 输出标注为 rad。现场仍需确认具体组/关节语义，不能将示例布局和限位迁移到未知机器人。degree 只在高层动作 API/CLI 边界转换。
@@ -42,7 +73,7 @@ CLI / AuroraMotionService → SafeArmController → AuroraRobotArm
                                     fourier_aurora_client==0.1.8
 ```
 
-`aurora_profile.py` 只描述部署事实与安全参数；`aurora_session.py` 负责 SDK、缓存更新观测、共享生命周期、FSM、命令 owner 和异常转换；`aurora.py` 做一次坐标转换和完整组命令；`aurora_motion.py` 复用 `upper_limb.py` 的有界轨迹，最后通过共同安全控制器提交。
+`aurora_profile.py` 描述部署事实与安全参数；`aurora_session.py` 负责 SDK、缓存更新观测、共享生命周期、FSM、命令 owner 和异常转换；`aurora_sdk.py` 封装唯一的 SDK 初始化兼容点；`aurora.py` 做一次坐标转换和完整组命令。保留这些已有模块和导入名称，避免为更名引入 facade/重复 driver。`aurora_motion.py` 复用 `upper_limb.py` 的有界轨迹，最后通过共同安全控制器提交。实时入口经 `ModelControlApp → RobotRuntime → mapper → SafeArmController → AuroraRobotArm → AuroraSession` 调用，不接触 session 或 SDK。
 
 `create_robot()` 工厂支持 fake/dymotor/aurora/aurora-fake。模型入口与手动模型入口均复用工厂；手动模型入口本轮仍只提供 fake/dymotor，Aurora 手动动作使用独立 CLI。没有修改训练、传感器协议、标定算法或 DyMotor native ABI。`JOINT_NAMES`/`DYMOTOR_JOINT_NAMES` 仍是原四关节，ctypes 数组长度仍为 4；Aurora 受控关节取自 profile，不伪造 motor_id、can_id 或 DyMotor 网络字段。
 
@@ -66,7 +97,7 @@ python tools/aurora_control.py doctor --connect --domain-id 123
 
 namespace/ROS 命名可用原 doctor 的 `--namespace`、`--ros-compatible` / `--no-ros-compatible`；不覆盖环境变量。输出真实收到的组名、位置/速度/力矩向量、维度、FSM、端点匹配、消息接收新鲜度。0.1.8 状态消息不提供 robot_type/hardware_type/end_effector_type，输出为 unavailable，不能据此猜型号。组名和维度也不能证明 joint ordering。
 
-与 doctor 不同，**backend 的 `connect()` 按要求调用完整 `AuroraClient.get_instance(...)`**。该 SDK 自身会创建所有订阅、publisher 和 policy service client，等待匹配；此过程没有动作调用，但也不是最小订阅连接。匹配失败明确终止，不修改 SDK 私有初始化、不做 velocity publisher 补丁、不吞异常。现场旧版服务若缺少 SDK 要求的端点，需要厂家确认匹配版本；本项目不猜兼容性。
+与 doctor 不同，**backend 的 `connect()` 调用完整 `AuroraClient.get_instance(...)`**，SDK 创建订阅、publisher 和 policy service client 并等待匹配。按已验证 backend 支持 `allow_missing_velocity_cmd`：只在锁定 0.1.8 时临时包装 `_init_publishers`，捕获 `DDSMatchTimeout` 后读取整个 publisher 列表，确认唯一 unmatched topic 的最终名称精确等于 `velocity_cmd` 才继续。初始化结束或异常时恢复原方法。该例外只清除对应的一条已核实 publisher 错误日志；其他 publisher/subscriber/service 错误仍失败。没有永久修改 SDK 或重置 singleton。
 
 ## 配置：未知值必须保持未知
 
@@ -76,26 +107,28 @@ namespace/ROS 命名可用原 doctor 的 `--namespace`、`--ros-compatible` / `-
 cp configs/robot_aurora.yaml configs/aurora.site.yaml
 ```
 
-`configs/aurora.unverified.yaml` 保留为同内容兼容路径。模板所有硬件字段均为 null/false，FSM 为空，**不能 execute**。结构使用 `groups` 列表，每个条目明确 side/part；字段对应关系如下：
+`configs/robot_aurora.yaml` 现在是 GR3 参考模板：domain 123、robot_name gr3、原生 DDS、FSM 2、左右 manipulator 的 7DoF 布局和参考 SDK 限位。`verified`、组/关节验证和 authority 标记仍为 false，**不能直接 execute**；sign/zero 和保守的软件速度/步长/跟踪阈值必须在本机复核，特别是旋转方向。旧的全空模板仍保留为 `configs/aurora.unverified.yaml`，旧 schema 兼容。结构使用 `groups` 列表，每个条目明确 side/part；字段对应关系如下：
 
 | 字段 | 意义 / 必须确认的内容 |
 |---|---|
 | `api_family`, `sdk_version` | 必须为 `aurora-python-dds-0.1.8`、`"0.1.8"` |
-| `connection.domain_id` | 实际 Domain ID，模板 null，无默认真实值 |
+| `connection.domain_id` | GR3 参考值 123，现场核对 |
 | `connection.robot_name` | SDK 可选参数；如果服务部署/示例需要，填写核实名称，不是型号反馈 |
 | `connection.namespace`, `is_ros_compatible` | 实际端点命名；null 的 ROS 选项保留 SDK 读取现有环境的行为 |
 | `robot_type`, `verification_note` | 现场核实的型号、依据/日期等。SDK 本身无法自动验证型号，需要设备记录补证 |
 | `verified`, `authority_verified` | 显式确认硬件参数及本应用可独占所选组；不是通过软件猜测出来的能力 |
-| `allowed_fsm` | 现场允许控制的 FSM 整数集合，空列表阻止 execute；不默认 10 或 13 |
-| `control_hz` | 已确认的应用控制频率 1–500 Hz，模板 null |
+| `allowed_fsm` | GR3 站立 streaming 为 `[2]`；不自动选择 10/11 |
+| `control_hz` | 应用控制频率 1–500 Hz，GR3 模板为 100 Hz |
+| `minimum_stable_level`, `stable_wait_seconds` | 默认 100、3 秒；稳定度必须严格大于阈值 |
+| `allow_missing_velocity_cmd` | 仅允许已证明的唯一 velocity_cmd publisher mismatch |
 | `feedback_timeout_s`, `endpoint_timeout_s` | 缓存更新时效/等待新样本上限；模板提供诊断默认值，整份 profile 的 verified 意味着现场复核这些值 |
 | `arrival_tolerance_rad`, `arrival_timeout_s` | 到位容差和有界等待时间 |
-| `stop_policy` | 仅支持明确接受的 `stop_publishing`，模板 null；没有 release lease/FSM 行为 |
-| `groups[].name`, `side`, `part`, `count` | 实际组名、left/right、arm/hand、**完整 expected_dof**；不写死 manipulator 名称或七关节 |
+| `stop_policy` | `stop_publishing`；cleanup 不切 FSM、不恢复姿态 |
+| `groups[].name`, `side`, `part`, `count` | GR3 使用 left/right_manipulator、arm、7；profile 验证其布局 |
 | `groups[].sdk_position_limits` | 长度等于 count 的 `[SDK下限, SDK上限]` 列表，必须覆盖每一槽，包括未具名槽位；不能填猜测值 |
 | `groups[].max_tracking_error` | 完整组的最大跟踪差 rad，也检查未映射槽位 |
 | `groups[].capabilities`, `verified` | 已确认的 joint_position 等能力、该侧实际组的验证状态 |
-| `joints[].name`, `index` | 具名语义关节及组内索引；不按示例猜顺序 |
+| `joints[].name`, `index` | GR3: shoulder_flexion=0、shoulder_abduction=1、upper_arm_rotation=2、elbow_flexion=3；未控制腕部 4/5/6 完整保留 |
 | `joints[].sign`, `zero` | 分别是 direction（±1）与 zero_position（SDK rad） |
 | `joints[].limits` | 语义 rad 的 min/max_position、max_position_step、max_tracking_error，以及 rad/s 的 max_velocity；缺失则拒绝 execute |
 | `joints[].verified`, `kind` | 关节校准已验证；kind 为实际 arm/wrist/finger，不虚构 palm 关节 |
@@ -205,11 +238,11 @@ after  = [0.30, -0.21, 0.50, -0.70, 0.03, 0.11, 0.00]
 
 0.1.8 getter 直接返回缓存 list；已审计的回调在每次消息到达时创建替换 list。本项目保留上次 list 引用，只有身份发生变化才认定缓存样本更新。相同位置值但新 list 仍是新样本；重复读旧 list 不刷新新鲜度。第一次观察无法知道缓存年龄，必须再观察到一次替换。观测时间使用前一次读取的 monotonic 时间作为保守下界，**不是机器人采样时间或 SDK 接收 timestamp**。兼容 JointState 的 `received_at` 在此 backend 承载这个下界。
 
-在人机确认/标定造成长间隔后、尚未 enable 时，会有界等待重新建立新鲜起点；运动中反馈过期立即故障，不自动恢复。到位还要求最终调用返回后再观察到新的位置样本。FSM getter 同样是缓存，但其公共 API 没有接收时间信息；本版能逐命令检查 FSM 值，不能独立证明 FSM topic 的接收年龄。这个限制需要现场通信/控制安全条件补证，不能用组数据新鲜推断所有状态新鲜。
+在人机确认/标定造成长间隔后、尚未 enable 时，会有界等待重新建立新鲜起点；运动中反馈过期立即故障，不自动恢复。到位还要求最终调用返回后再观察到新的位置样本。FSM 和 stand-pose getter 同样是缓存，但其公共 API 没有接收时间信息；本版能逐命令检查 FSM/stable_level 值，不能独立证明这两个 topic 的接收年龄。这个限制需要现场通信/控制安全条件补证，不能用组数据新鲜推断所有状态新鲜。
 
 ## 真机 execute 与首次小角度验收
 
-只有同时满足：真实 backend、`--execute`、SDK 正好 0.1.8、已确认的 domain/group/完整 DOF/index/方向/零位/限位/安全参数/FSM、现场独占控制条件、新鲜有效反馈，且交互输入**恰好 `YES`**，才允许动作。`yes`、`YES `、空输入都取消；EOF/Ctrl+C 退出。没有自动 FSM 切换、强制切换、抢占或 Servo On。`enable()` 仅打开本应用发送门控。
+只有同时满足：真实 backend、`--execute`、SDK 正好 0.1.8、已确认的 domain/group/完整 DOF/index/方向/零位/限位/安全参数/FSM、现场独占控制条件、新鲜有效反馈，且交互输入**恰好 `YES`**，才允许动作。`yes`、`YES `、空输入都取消；EOF/Ctrl+C 退出。默认不切换 FSM；model control 的显式 `--prepare-aurora-fsm` 例外见本文开头。`enable()` 仅打开本应用发送门控。
 
 建议先只读确认身份/网络/反馈，再由现场独立流程确认允许 FSM 和控制模式、排除其他写入方，核实整组映射与限位。现场须有人监护、运动空间清空、独立硬件急停可用。**joint limit 检查不等于 self-collision avoidance，也不等于 environment collision avoidance。**
 
@@ -237,6 +270,10 @@ python tools/run_model_control.py --robot aurora --arm-side right --source-side 
 第一条仍要求原配置中的模型目录/标定存在、启用的 IMU 配置正确；fake 机器人不虚构训练权重。`--side` 保留为 `--arm-side` 的兼容别名。当前 shoulder predictors/标定提示是**右侧**合同，要求 source-side=right 且 arm-side=right；没有左右镜像，不会把一个袖套复制到双臂。独立手动 CLI 支持左侧，不代表右肩模型已适配左肩。
 
 保持原单一控制线程、sensor watchdog、预测错误/IMU 错误处理和 finally 退出；传感器不调用 SDK。Aurora 传感器超时/预测错误立即阻止写入并关闭本应用。DyMotor 原 connect 仍会执行厂家 Servo On 等启动步骤，不能把所有 backend 的“无 execute”统称为无动作。
+
+model control 的 `aurora-fake` 使用 GR3 布局、FSM 2 和模拟 stable_level=101。
+通用单元测试/手动 CLI 的 `fake_session()` 仍保留上述 FSM 42 的合成夹具，
+用于验证非零 zero、不同 sign 和未映射槽位，不能作为实机 profile。
 
 ## 手部、停止与故障
 

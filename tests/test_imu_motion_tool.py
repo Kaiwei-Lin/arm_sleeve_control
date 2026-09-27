@@ -34,7 +34,7 @@ def test_four_imu_tool_runs_without_sleeve_or_robot(monkeypatch, capsys) -> None
     FakeDualImuArmEstimator.instances.clear()
     monkeypatch.setitem(
         sys.modules,
-        "flexarm",
+        "sleeve_arm.estimation.flexarm",
         SimpleNamespace(DualImuArmEstimator=FakeDualImuArmEstimator),
     )
     monkeypatch.setattr(builtins, "input", lambda _prompt: "")

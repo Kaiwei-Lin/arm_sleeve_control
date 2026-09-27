@@ -1,0 +1,534 @@
+{
+  "provenance": {
+    "package": "flexarm-estimator",
+    "version": "0.3.0",
+    "source_sha256": "ad6b4c290cbaf47beb1eb461bfd2c2e76c1951754bb4417edee5a2bd883ff208",
+    "source": "installed package before migration; configured orthogonal axes"
+  },
+  "config": {
+    "down_axis": [
+      -1,
+      0,
+      0
+    ],
+    "forward_axis": [
+      0,
+      0,
+      1
+    ],
+    "lateral_axis": [
+      0,
+      1,
+      0
+    ],
+    "rest_threshold_deg": 5,
+    "dominance_ratio": 1.1
+  },
+  "rest": [
+    {
+      "chest": [
+        0.9483236552061993,
+        0.0,
+        0.0,
+        0.31730465640509214
+      ],
+      "arm": [
+        0.8785646394130013,
+        0.016715742243431017,
+        0.11796671498666045,
+        0.4625241750326249
+      ]
+    },
+    {
+      "chest": [
+        -0.9483236552061993,
+        -0.0,
+        -0.0,
+        -0.31730465640509214
+      ],
+      "arm": [
+        -0.8785646394130013,
+        -0.016715742243431017,
+        -0.11796671498666045,
+        -0.4625241750326249
+      ]
+    }
+  ],
+  "forward": [
+    {
+      "chest": [
+        0.9483236552061993,
+        0.0,
+        0.0,
+        0.31730465640509214
+      ],
+      "arm": [
+        0.7404389959347816,
+        -0.058750366067177165,
+        0.5571545885772494,
+        0.37131826269843105
+      ]
+    },
+    {
+      "chest": [
+        0.9483236552061993,
+        0.0,
+        0.0,
+        0.31730465640509214
+      ],
+      "arm": [
+        0.7404389959347816,
+        -0.058750366067177165,
+        0.5571545885772494,
+        0.37131826269843105
+      ]
+    },
+    {
+      "chest": [
+        0.9483236552061993,
+        0.0,
+        0.0,
+        0.31730465640509214
+      ],
+      "arm": [
+        0.7404389959347816,
+        -0.058750366067177165,
+        0.5571545885772494,
+        0.37131826269843105
+      ]
+    }
+  ],
+  "rest_result": {
+    "chest_reference": [
+      0.9483236552061993,
+      0.0,
+      0.0,
+      0.31730465640509214
+    ],
+    "arm_reference": [
+      0.8785646394130013,
+      0.016715742243431017,
+      0.11796671498666045,
+      0.4625241750326249
+    ],
+    "relative_reference": [
+      0.9799247046208297,
+      0.0532833217498549,
+      0.1065666434997098,
+      0.15984996524956468
+    ],
+    "sample_count": 2
+  },
+  "forward_result": {
+    "forward_axis": [
+      0.0,
+      -9.212026216785648e-17,
+      1.0
+    ],
+    "lateral_axis": [
+      0.0,
+      1.0,
+      9.212026216785648e-17
+    ],
+    "representative_magnitude_deg": 55.00000000000001,
+    "sample_count": 3
+  },
+  "rows": [
+    {
+      "name": "rest",
+      "timestamp": 100.0,
+      "chest": [
+        0.9483236552061993,
+        0.0,
+        0.0,
+        0.31730465640509214
+      ],
+      "arm": [
+        0.8785646394130013,
+        0.016715742243431017,
+        0.11796671498666045,
+        0.4625241750326249
+      ],
+      "estimate": {
+        "direction": "Rest",
+        "magnitude_deg": 3.975693351829395e-16,
+        "plane_deg": 5.278102229856844e-15,
+        "confidence": 1.0,
+        "forward_component": 6.938893903907227e-18,
+        "lateral_component": 6.392127255828749e-34,
+        "arm_vector": [
+          -1.0,
+          0.0,
+          6.938893903907227e-18
+        ]
+      },
+      "intent": {
+        "timestamp": 100.0,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": 0.0,
+        "shoulder_abduction_rad": 0.0,
+        "upper_arm_rotation_rad": null,
+        "action": null,
+        "confidence": 1.0,
+        "action_probabilities": null,
+        "angle_deg": 3.975693351829395e-16,
+        "inference_ms": 0.0,
+        "model_action": "Rest",
+        "angle_confidence": null,
+        "moving": false
+      }
+    },
+    {
+      "name": "under_rest_threshold",
+      "timestamp": 100.01,
+      "chest": [
+        0.9363238655449423,
+        0.01845347106053439,
+        0.018411615999705276,
+        0.3501686745171167
+      ],
+      "arm": [
+        0.8545203247669336,
+        0.026724995454028594,
+        0.16739045579837936,
+        0.49097986158885104
+      ],
+      "estimate": {
+        "direction": "Rest",
+        "magnitude_deg": 4.000000000000002,
+        "plane_deg": -1.777868935668021e-13,
+        "confidence": 1.0,
+        "forward_component": 0.06975647374412533,
+        "lateral_component": -2.1645201232161509e-16,
+        "arm_vector": [
+          -0.9975640502598243,
+          -2.228779969708291e-16,
+          0.06975647374412533
+        ]
+      },
+      "intent": {
+        "timestamp": 100.01,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": 0.0,
+        "shoulder_abduction_rad": 0.0,
+        "upper_arm_rotation_rad": null,
+        "action": null,
+        "confidence": 1.0,
+        "action_probabilities": null,
+        "angle_deg": 4.000000000000002,
+        "inference_ms": 0.0,
+        "model_action": "Rest",
+        "angle_confidence": null,
+        "moving": false
+      }
+    },
+    {
+      "name": "forward",
+      "timestamp": 100.02,
+      "chest": [
+        0.9225417301884506,
+        0.03687181489007832,
+        0.03678818444190727,
+        0.38236612665491154
+      ],
+      "arm": [
+        0.6649353805714545,
+        -0.07288992781398598,
+        0.6104940634549948,
+        0.4240813560789668
+      ],
+      "estimate": {
+        "direction": "Forward",
+        "magnitude_deg": 60.000000000000036,
+        "plane_deg": 1.7202824081709777e-15,
+        "confidence": 1.0,
+        "forward_component": 0.8660254037844389,
+        "lateral_component": 2.6002059485365248e-17,
+        "arm_vector": [
+          -0.49999999999999956,
+          -5.377642775528104e-17,
+          0.8660254037844389
+        ]
+      },
+      "intent": {
+        "timestamp": 100.02,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": 1.0471975511965983,
+        "shoulder_abduction_rad": 0.0,
+        "upper_arm_rotation_rad": null,
+        "action": "FORWARD",
+        "confidence": 1.0,
+        "action_probabilities": null,
+        "angle_deg": 60.000000000000036,
+        "inference_ms": 0.0,
+        "model_action": "Forward",
+        "angle_confidence": null,
+        "moving": true
+      }
+    },
+    {
+      "name": "transition_holds_forward",
+      "timestamp": 100.03,
+      "chest": [
+        0.9070034842147012,
+        0.055219971124322025,
+        0.055094724484120366,
+        0.41383572313834877
+      ],
+      "arm": [
+        0.855789609386805,
+        -0.004377161534842029,
+        0.47535538051593573,
+        0.2040643210780054
+      ],
+      "estimate": {
+        "direction": "Transition",
+        "magnitude_deg": 55.000000000000014,
+        "plane_deg": 44.99999999999999,
+        "confidence": 1.9167289755671485e-16,
+        "forward_component": 0.5792279653395693,
+        "lateral_component": 0.5792279653395692,
+        "arm_vector": [
+          -0.5735764363510459,
+          0.5792279653395692,
+          0.5792279653395693
+        ]
+      },
+      "intent": {
+        "timestamp": 100.03,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": 1.0471975511965983,
+        "shoulder_abduction_rad": 0.0,
+        "upper_arm_rotation_rad": null,
+        "action": null,
+        "confidence": 1.9167289755671485e-16,
+        "action_probabilities": null,
+        "angle_deg": 55.000000000000014,
+        "inference_ms": 0.0,
+        "model_action": "Transition",
+        "angle_confidence": null,
+        "moving": true
+      }
+    },
+    {
+      "name": "backward",
+      "timestamp": 100.04,
+      "chest": [
+        0.889738705558041,
+        0.0734630130050326,
+        0.07329638858689852,
+        0.4445175598019073
+      ],
+      "arm": [
+        0.7944174430470552,
+        0.18304331386433206,
+        -0.15335557868853192,
+        0.5584605070345153
+      ],
+      "estimate": {
+        "direction": "Backward",
+        "magnitude_deg": 40.0,
+        "plane_deg": -180.0,
+        "confidence": 0.9999999999999998,
+        "forward_component": -0.6427876096865394,
+        "lateral_component": -1.0900394081838141e-16,
+        "arm_vector": [
+          -0.7660444431189781,
+          -4.9790177695807605e-17,
+          -0.6427876096865394
+        ]
+      },
+      "intent": {
+        "timestamp": 100.04,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": -0.6981317007977318,
+        "shoulder_abduction_rad": 0.0,
+        "upper_arm_rotation_rad": null,
+        "action": "BACKWARD",
+        "confidence": 0.9999999999999998,
+        "action_probabilities": null,
+        "angle_deg": 40.0,
+        "inference_ms": 0.0,
+        "model_action": "Backward",
+        "angle_confidence": null,
+        "moving": true
+      }
+    },
+    {
+      "name": "lateral",
+      "timestamp": 100.05,
+      "chest": [
+        0.870780258705909,
+        0.0915662138651234,
+        0.09135852884810712,
+        0.47435323202565643
+      ],
+      "arm": [
+        0.9685470268087839,
+        0.1068313384873533,
+        0.22028641442287486,
+        0.04447041260859685
+      ],
+      "estimate": {
+        "direction": "Lateral",
+        "magnitude_deg": 70.00000000000003,
+        "plane_deg": 90.00000000000001,
+        "confidence": 0.9999999999999999,
+        "forward_component": -5.58687220027957e-17,
+        "lateral_component": 0.9396926207859084,
+        "arm_vector": [
+          -0.3420201433256685,
+          0.9396926207859084,
+          3.0696008581202325e-17
+        ]
+      },
+      "intent": {
+        "timestamp": 100.05,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": 0.0,
+        "shoulder_abduction_rad": 1.2217304763960313,
+        "upper_arm_rotation_rad": null,
+        "action": "LATERAL",
+        "confidence": 0.9999999999999999,
+        "action_probabilities": null,
+        "angle_deg": 70.00000000000003,
+        "inference_ms": 0.0,
+        "model_action": "Lateral",
+        "angle_confidence": null,
+        "moving": true
+      }
+    },
+    {
+      "name": "transition_holds_lateral",
+      "timestamp": 100.06,
+      "chest": [
+        0.8501642321394158,
+        0.10949511323283853,
+        0.109246762957174,
+        0.5032859459117695
+      ],
+      "arm": [
+        0.7962529459384279,
+        0.0018492090784307871,
+        0.4986142636059895,
+        0.3425808556221673
+      ],
+      "estimate": {
+        "direction": "Transition",
+        "magnitude_deg": 50.0,
+        "plane_deg": 44.999999999999986,
+        "confidence": 4.0992202809828773e-16,
+        "forward_component": 0.5416752204197021,
+        "lateral_component": 0.5416752204197018,
+        "arm_vector": [
+          -0.6427876096865394,
+          0.5416752204197018,
+          0.5416752204197021
+        ]
+      },
+      "intent": {
+        "timestamp": 100.06,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": 0.0,
+        "shoulder_abduction_rad": 1.2217304763960313,
+        "upper_arm_rotation_rad": null,
+        "action": null,
+        "confidence": 4.0992202809828773e-16,
+        "action_probabilities": null,
+        "angle_deg": 50.0,
+        "inference_ms": 0.0,
+        "model_action": "Transition",
+        "angle_confidence": null,
+        "moving": true
+      }
+    },
+    {
+      "name": "rest_clears",
+      "timestamp": 100.07,
+      "chest": [
+        0.827929869636869,
+        0.12721558242921957,
+        0.1269270396437718,
+        0.5312606263949362
+      ],
+      "arm": [
+        0.6289388282620155,
+        0.361646073447044,
+        0.30829197616102333,
+        0.6153081547480654
+      ],
+      "estimate": {
+        "direction": "Rest",
+        "magnitude_deg": 2.2335649058776436e-14,
+        "plane_deg": -100.4057466687336,
+        "confidence": 1.0,
+        "forward_component": -7.041034635502339e-17,
+        "lateral_component": -3.834192128734174e-16,
+        "arm_vector": [
+          -1.0,
+          -3.834192128734174e-16,
+          -7.041034635502342e-17
+        ]
+      },
+      "intent": {
+        "timestamp": 100.07,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": 0.0,
+        "shoulder_abduction_rad": 0.0,
+        "upper_arm_rotation_rad": null,
+        "action": null,
+        "confidence": 1.0,
+        "action_probabilities": null,
+        "angle_deg": 2.2335649058776436e-14,
+        "inference_ms": 0.0,
+        "model_action": "Rest",
+        "angle_confidence": null,
+        "moving": false
+      }
+    },
+    {
+      "name": "forward_after_world_motion",
+      "timestamp": 100.08,
+      "chest": [
+        0.8041194955710108,
+        0.14469388953398554,
+        0.14436570349634636,
+        0.5582240220808802
+      ],
+      "arm": [
+        0.5780597848764195,
+        0.008574871823397247,
+        0.48442862509229323,
+        0.6565837828282316
+      ],
+      "estimate": {
+        "direction": "Forward",
+        "magnitude_deg": 35.00000000000001,
+        "plane_deg": -1.8481221456106108e-14,
+        "confidence": 0.9999999999999997,
+        "forward_component": 0.5735764363510462,
+        "lateral_component": -1.850117623373542e-16,
+        "arm_vector": [
+          -0.8191520442889917,
+          -2.378497740273174e-16,
+          0.5735764363510462
+        ]
+      },
+      "intent": {
+        "timestamp": 100.08,
+        "elbow_flexion": null,
+        "shoulder_flexion_rad": 0.6108652381980154,
+        "shoulder_abduction_rad": 0.0,
+        "upper_arm_rotation_rad": null,
+        "action": "FORWARD",
+        "confidence": 0.9999999999999997,
+        "action_probabilities": null,
+        "angle_deg": 35.00000000000001,
+        "inference_ms": 0.0,
+        "model_action": "Forward",
+        "angle_confidence": null,
+        "moving": true
+      }
+    }
+  ]
+}

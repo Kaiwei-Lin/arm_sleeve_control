@@ -78,6 +78,10 @@ class AuroraRobotArm(RobotArm):
                 raise RobotError(f"{exc}; cleanup: {cleanup}") from exc
             raise
 
+    def prepare_control_mode(self, *, prepare_fsm=False, operator_confirmed=False):
+        self._require()
+        self.session.prepare_control_mode(prepare_fsm=prepare_fsm, operator_confirmed=operator_confirmed)
+
     def read_joint_states(self, joint_names=None):
         self._require()
         names = tuple(self.config.joints) if joint_names is None else tuple(joint_names)

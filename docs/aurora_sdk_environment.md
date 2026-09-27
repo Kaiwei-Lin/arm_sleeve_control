@@ -34,7 +34,7 @@ python -m pip install -r requirements-dev.txt
 python -m pip check
 ```
 
-`requirements.txt` 包含项目自带的 `flexarm_estimator-0.3.0-py3-none-any.whl`，它是模型估计器，与 Aurora SDK 是两个包。`requienment.txt` 是原拼写的兼容入口。`requirements-aurora.txt` 仅一行 `fourier_aurora_client==0.1.8`，没有加入基础或开发清单。其他没有现成环境的机器可先 `conda create -n aurora python=3.10 pip -y`，再 `conda activate aurora`。本次复用 skin，没有新建第二套环境。
+估计器现已迁入 `sleeve_arm/estimation/flexarm/`；`requirements.txt` 不再安装 flexarm wheel，只安装通用依赖。参见 [迁移说明](local_estimators.md)。估计器源码与 Aurora SDK 独立。`requienment.txt` 是原拼写的兼容入口。`requirements-aurora.txt` 仅一行 `fourier_aurora_client==0.1.8`，没有加入基础或开发清单。其他没有现成环境的机器可先 `conda create -n aurora python=3.10 pip -y`，再 `conda activate aurora`。本次复用 skin，没有新建第二套环境。
 
 默认源找不到固定版本时才改用：
 
@@ -60,7 +60,7 @@ python -m pip install --index-url https://pypi.org/simple "fourier_aurora_client
 
 安装前执行并输出了 `git status`、`git rev-parse HEAD`、`which python`、Python/pip 版本、`pip list`、`conda info --envs`；原有 34 个 tracked 文件改动按用户内容保留。工作区没有 `.codegraph/`，未创建索引。当前阶段未 reset、clean、stash、切分支、提交或 push。
 
-本次同时补齐 skin 的项目运行/测试依赖：flexarm-estimator 0.3.0、scikit-learn 1.7.2、joblib 1.6.0、pytest 9.1.1 等；原有 NumPy 2.2.6、PyYAML 6.0.3、pyserial 3.5 保留。未修改系统 Python、DDS 环境变量或 LD_LIBRARY_PATH，未升级机器人端服务/固件。
+以下保留当时的安装记录；后续源码迁移已取消项目对 flexarm wheel 的依赖。当时同时补齐 skin 的项目运行/测试依赖：flexarm-estimator 0.3.0、scikit-learn 1.7.2、joblib 1.6.0、pytest 9.1.1 等；原有 NumPy 2.2.6、PyYAML 6.0.3、pyserial 3.5 保留。未修改系统 Python、DDS 环境变量或 LD_LIBRARY_PATH，未升级机器人端服务/固件。
 
 ## 官方仓库与包版本交叉核对
 
@@ -70,7 +70,7 @@ python -m pip install --index-url https://pypi.org/simple "fourier_aurora_client
 | 0.1.8 文档参考 revision | `b434869719ae256d02d8285e88ea2b22c1515602`；README 标题 v1.3.0，明确安装 client 0.1.8 |
 | Python package | PyPI `fourier_aurora_client`（pip 将连字符/下划线规范化为同一个包） |
 | Package version | 实际安装并 introspect：**0.1.8** |
-| Python requirement | 0.1.8 METADATA：`>=3.9`；本项目 flexarm wheel 要求 `>=3.10`；实测 3.10.20 |
+| Python requirement | 0.1.8 METADATA：`>=3.9`；本项目要求 `>=3.10`；实测 3.10.20 |
 | Supported platform | 本次 import 验证 Linux x86_64 / WSL2；Windows 原生、ARM、其他 Python 版本未验证 |
 | AuroraClient init API | `get_instance(domain_id, participant_qos=None, robot_name=None, namespace=None, is_ros_compatible=None)`；初始化即建 DDS 端点 |
 | State API | `get_fsm_state()` 等旧 getters；没有 `get_aurora_state()` |
