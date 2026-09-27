@@ -7,9 +7,10 @@
 的已验证 backend/demo/bridge 为依据；逐页资料链接与职责审计见
 [model_control_architecture.md](model_control_architecture.md)。
 
-中文交互式单关节调试现由 `tools/aurora_arm_debug.py` 提供，支持“右臂向上抬30度”、
-“右臂向后30度”、状态查看及反馈到位报告。它复用本文的 direct streaming 控制层，
-不依赖袖套/IMU。运行方式与角度定义见 [中文手臂 SDK 调试](aurora_arm_debug.md)。
+数字菜单单关节调试由 `tools/aurora_arm_debug.py` 提供：先选 `1` 向前、`2` 向后、
+`3` 侧摆，再输入角度；也支持状态查看及反馈到位报告。它复用本文的 direct
+streaming 控制层，不依赖袖套/IMU。运行方式与角度定义见
+[数字菜单手臂 SDK 调试](aurora_arm_debug.md)。
 
 ## 两条不同的控制路径
 

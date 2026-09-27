@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""中文 Aurora 手臂调试：默认离线预览，--simulate 模拟，--execute 真机。"""
+"""数字菜单 Aurora 手臂调试：默认离线预览，--simulate 模拟，--execute 真机。"""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
-import re
 import sys
 import unicodedata
 
@@ -21,30 +20,14 @@ from sleeve_arm.robot.aurora_fake import fake_session, gr3_fake_profile
 from sleeve_arm.robot.aurora_profile import load_aurora_profile
 
 
-DIRECTIONS = {
-    "向上抬": ("shoulder_flexion", 1), "向上": ("shoulder_flexion", 1),
-    "向前抬": ("shoulder_flexion", 1), "向前": ("shoulder_flexion", 1),
-    "前举": ("shoulder_flexion", 1), "向后抬": ("shoulder_flexion", -1),
-    "向后": ("shoulder_flexion", -1), "后伸": ("shoulder_flexion", -1),
-    "向外抬": ("shoulder_abduction", 1), "向外": ("shoulder_abduction", 1),
-    "外展": ("shoulder_abduction", 1), "侧举": ("shoulder_abduction", 1),
-    "向内收": ("shoulder_abduction", -1), "向内": ("shoulder_abduction", -1),
-    "内收": ("shoulder_abduction", -1),
-    "屈肘": ("elbow_flexion", 1), "弯肘": ("elbow_flexion", 1),
-    "伸肘": ("elbow_flexion", -1),
+MENU_ACTIONS = {
+    "1": ("向前抬", "shoulder_flexion", 1),
+    "2": ("向后抬", "shoulder_flexion", -1),
+    "3": ("侧摆（向外抬）", "shoulder_abduction", 1),
+    "4": ("向内收", "shoulder_abduction", -1),
+    "5": ("屈肘", "elbow_flexion", 1),
+    "6": ("伸肘", "elbow_flexion", -1),
 }
-PATTERN = re.compile(
-    r"(?P<side>左|右)(?:手臂|臂|胳膊)(?P<direction>"
-    + "|".join(sorted(DIRECTIONS, key=len, reverse=True))
-    + r")(?P<angle>\d+(?:\.\d+)?)(?:度|°)"
-)
-HELP = """输入示例（角度使用数字）：
-  右臂向上抬30度 / 右臂向前30度 / 右臂向后30度
-  右臂向外20度 / 右臂向内5度 / 右臂屈肘30度
-  状态 / 帮助 / 退出
-向上表示肩部前举；这些是关节角指令，不是手掌的空间位移。
-每条指令只改变一个关节，其余关节保持。左臂需启动时指定 --side left。
-"""
 
 
 @dataclass(frozen=True)
@@ -54,19 +37,40 @@ class ArmCommand:
     angle_deg: float
 
 
-def normalize(text):
-    return "".join(unicodedata.normalize("NFKC", text).split()).rstrip("。!").lower()
+def show_menu(side):
+    print(f"\n{'右' if side == 'right' else '左'}臂动作菜单：")
+    for number, (label, _, _) in MENU_ACTIONS.items():
+        print(f"  {number}. {label}")
+    print("  8. 查看当前角度\n  0. 退出")
 
 
-def parse_command(text):
-    match = PATTERN.fullmatch(normalize(text))
-    if match is None:
-        raise ValueError("无法解析；例如：右臂向上抬30度。一次只输入一个动作。")
-    magnitude = float(match["angle"])
+def parse_angle(value):
+    try:
+        magnitude = float(unicodedata.normalize("NFKC", str(value)).strip())
+    except ValueError as exc:
+        raise ValueError("请输入角度数字，例如 30 或 12.5，不需要输入“度”。") from exc
     if not math.isfinite(magnitude) or not 0 <= magnitude <= 180:
         raise ValueError("角度必须在 0～180 度内；实际可用范围还受机器人限位约束。")
-    joint, sign = DIRECTIONS[match["direction"]]
-    return ArmCommand("right" if match["side"] == "右" else "left", joint, sign * magnitude)
+    return magnitude
+
+
+def make_command(side, action, angle):
+    if side not in ("right", "left") or action not in MENU_ACTIONS:
+        raise ValueError("请选择菜单中的动作编号。")
+    _, joint, sign = MENU_ACTIONS[action]
+    return ArmCommand(side, joint, sign * parse_angle(angle))
+
+
+def read_angle(input_fn):
+    while True:
+        text = input_fn("请输入角度（度，0～180，直接回车取消）：").strip()
+        if not text:
+            print("已取消，返回菜单。")
+            return None
+        try:
+            return parse_angle(text)
+        except ValueError as exc:
+            print(f"输入错误：{exc}")
 
 
 def motion_duration(profile, joint, start, target, requested=None):
@@ -161,7 +165,9 @@ def main(argv=None, *, input_fn=None):
     parser.add_argument("--reference", choices=("neutral", "current"), default="neutral",
                         help="neutral: 目标角度相对标定零位；current: 相对当前姿态的增量")
     parser.add_argument("--duration", type=float, help="单次运动秒数；默认根据 profile 限速自动计算")
-    parser.add_argument("--command", help="只运行一条中文指令；不提供则进入交互模式")
+    parser.add_argument("--action", choices=(*MENU_ACTIONS, "8", "0"),
+                        help="只运行一个菜单项；1～6 需同时提供 --angle-deg")
+    parser.add_argument("--angle-deg", type=float, help="单次动作的角度；交互模式会提示输入")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--execute", action="store_true", help="连接真机；每次动作仍需输入 YES")
     mode.add_argument("--simulate", action="store_true", help="仅用于 --backend fake")
@@ -172,6 +178,15 @@ def main(argv=None, *, input_fn=None):
         parser.error("--simulate 要求 --backend fake")
     if args.duration is not None and (not math.isfinite(args.duration) or not 0 < args.duration <= 3600):
         parser.error("--duration 必须在 (0, 3600] 秒范围内")
+    if args.action in MENU_ACTIONS and args.angle_deg is None:
+        parser.error("--action 1～6 必须同时提供 --angle-deg")
+    if args.angle_deg is not None:
+        if args.action not in MENU_ACTIONS:
+            parser.error("--angle-deg 必须与 --action 1～6 一起使用")
+        try:
+            parse_angle(args.angle_deg)
+        except ValueError as exc:
+            parser.error(str(exc))
     read = input_fn or input
     controller = None
     code = 0
@@ -193,29 +208,29 @@ def main(argv=None, *, input_fn=None):
             show_status(profile, group, robot)
         print("模式：" + ("真机执行" if args.execute else "模拟执行" if args.simulate else "预览，不下发动作"))
         print("角度含义：" + ("相对标定零位的目标角度" if args.reference == "neutral" else "相对当前反馈的增量"))
-        print(HELP)
+        print("先选择方向，再输入角度；每次只改变一个关节，其余关节保持。")
         while True:
-            line = args.command if args.command is not None else read("动作> ")
-            normalized = normalize(line)
-            if normalized in ("退出", "quit", "exit"):
-                break
-            if normalized in ("帮助", "help", "?"):
-                print(HELP)
-            elif normalized in ("状态", "status"):
-                show_status(profile, group, None if controller is None else controller.robot)
+            if args.action is None:
+                show_menu(args.side)
+                action = unicodedata.normalize("NFKC", read("请选择动作编号：")).strip()
             else:
-                try:
-                    command = parse_command(line)
-                    if command.side != args.side:
-                        raise ValueError(f"当前仅连接 {args.side} 臂；切换手臂需退出并修改 --side。")
-                except ValueError as exc:
-                    print(f"输入错误：{exc}")
-                    success = False
-                else:
-                    success = run_command(args, profile, group, command, controller, read)
-                if args.command is not None and not success:
+                action = args.action
+            if action == "0":
+                break
+            if action == "8":
+                show_status(profile, group, None if controller is None else controller.robot)
+            elif action in MENU_ACTIONS:
+                print(f"已选择：{'右' if args.side == 'right' else '左'}臂{MENU_ACTIONS[action][0]}")
+                angle = args.angle_deg if args.action is not None else read_angle(read)
+                if angle is None:
+                    continue
+                command = make_command(args.side, action, angle)
+                success = run_command(args, profile, group, command, controller, read)
+                if args.action is not None and not success:
                     code = 1
-            if args.command is not None:
+            else:
+                print("输入错误：请选择 1～6、8 或 0。")
+            if args.action is not None:
                 break
     except EOFError:
         print("输入结束，关闭会话。")

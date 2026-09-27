@@ -9,27 +9,26 @@ import pytest
 from tools import aurora_arm_debug as tool
 
 
-@pytest.mark.parametrize("text,side,joint,angle", [
-    ("右臂向上抬30度", "right", "shoulder_flexion", 30),
-    ("右臂向后30度", "right", "shoulder_flexion", -30),
-    (" 右手臂 向前 ３０．５ 度。", "right", "shoulder_flexion", 30.5),
-    ("左臂侧举20°", "left", "shoulder_abduction", 20),
-    ("右臂向内收5度", "right", "shoulder_abduction", -5),
-    ("右臂屈肘30度", "right", "elbow_flexion", 30),
-    ("右臂伸肘10度", "right", "elbow_flexion", -10),
+@pytest.mark.parametrize("action,value,side,joint,angle", [
+    ("1", "30", "right", "shoulder_flexion", 30),
+    ("2", "30", "right", "shoulder_flexion", -30),
+    ("1", " ３０．５ ", "right", "shoulder_flexion", 30.5),
+    ("3", "20", "left", "shoulder_abduction", 20),
+    ("4", "5", "right", "shoulder_abduction", -5),
+    ("5", "30", "right", "elbow_flexion", 30),
+    ("6", "10", "right", "elbow_flexion", -10),
+    ("1", "0", "right", "shoulder_flexion", 0),
 ])
-def test_chinese_command_meaning(text, side, joint, angle):
-    assert tool.parse_command(text) == tool.ArmCommand(side, joint, angle)
+def test_menu_command_meaning(action, value, side, joint, angle):
+    assert tool.make_command(side, action, value) == tool.ArmCommand(side, joint, angle)
 
 
 @pytest.mark.parametrize("text", [
-    "右臂向后-30度", "右臂向后nan度", "右臂向前181度", "右臂向前30",
-    "右臂向后30度然后左臂向前30度", "左腿向前30度", "右臂向上三十度",
-    "右臂回零", "", "右臂向前" + "9" * 400 + "度",
+    "-30", "nan", "inf", "181", "30度", "30 20", "三十", "", "9" * 400,
 ])
 def test_ambiguous_or_invalid_input_is_rejected(text):
     with pytest.raises(ValueError):
-        tool.parse_command(text)
+        tool.parse_angle(text)
 
 
 def injected_session(monkeypatch):
@@ -41,7 +40,7 @@ def injected_session(monkeypatch):
 def test_repl_moves_both_directions_reuses_session_and_preserves_other_slots(monkeypatch, capsys):
     session = injected_session(monkeypatch)
     original = list(session.fake_client.groups["right_manipulator"]["position"])
-    lines = iter(["右臂向上抬30度", "状态", "右臂向后30度", "退出"])
+    lines = iter(["1", "30", "8", "2", "30", "0"])
 
     def read(_):
         session.clock.sleep(30.)  # Operator idle time exceeds the feedback timeout.
@@ -60,39 +59,41 @@ def test_repl_moves_both_directions_reuses_session_and_preserves_other_slots(mon
     output = capsys.readouterr().out
     assert output.count('"arrived": true') == 2
     assert '"delivery_confirmed": false' in output
+    assert "右臂动作菜单" in output
+    assert "3. 侧摆（向外抬）" in output
     assert "set_fsm_state" not in client.calls
 
 
 def test_current_reference_accumulates_against_feedback(monkeypatch):
     session = injected_session(monkeypatch)
-    lines = iter(["右臂向前5度", "右臂向前5度", "退出"])
+    lines = iter(["1", "5", "1", "5", "0"])
     assert tool.main(["--backend", "fake", "--simulate", "--reference", "current"],
                      input_fn=lambda _: next(lines)) == 0
     assert session.fake_client.commands[-1]["right_manipulator"][0] == pytest.approx(-math.radians(10))
 
 
-@pytest.mark.parametrize("side,name,index,sign", [
-    ("right", "右臂屈肘30度", 3, -1),
-    ("left", "左臂向外20度", 1, 1),
+@pytest.mark.parametrize("side,action,angle,index,sign", [
+    ("right", "5", 30, 3, -1),
+    ("right", "3", 20, 1, -1),
+    ("left", "3", 20, 1, 1),
 ])
-def test_group_and_joint_routing(monkeypatch, side, name, index, sign):
+def test_group_and_joint_routing(monkeypatch, side, action, angle, index, sign):
     session = injected_session(monkeypatch)
-    assert tool.main(["--backend", "fake", "--simulate", "--side", side, "--command", name]) == 0
+    assert tool.main(["--backend", "fake", "--simulate", "--side", side,
+                      "--action", action, "--angle-deg", str(angle)]) == 0
     group = f"{side}_manipulator"
     assert set(session.fake_client.commands[-1]) == {group}
-    angle = 30 if index == 3 else 20
     assert session.fake_client.commands[-1][group][index] == pytest.approx(sign * math.radians(angle))
 
 
-@pytest.mark.parametrize("command,extra", [
-    ("左臂向前5度", []),
-    ("右臂向外150度", []),
-    ("右臂屈肘150度", []),
-    ("右臂向前30度", ["--duration", "0.1"]),
+@pytest.mark.parametrize("action,angle,extra", [
+    ("3", "150", []),
+    ("5", "150", []),
+    ("1", "30", ["--duration", "0.1"]),
 ])
-def test_rejects_bad_side_limits_and_duration_without_sending(monkeypatch, command, extra):
+def test_rejects_limits_and_duration_without_sending(monkeypatch, action, angle, extra):
     session = injected_session(monkeypatch)
-    assert tool.main(["--backend", "fake", "--simulate", "--command", command, *extra]) == 1
+    assert tool.main(["--backend", "fake", "--simulate", "--action", action, "--angle-deg", angle, *extra]) == 1
     assert not session.fake_client.commands
     assert session.fake_client.closed
 
@@ -101,7 +102,7 @@ def test_unverified_real_profile_rejected_before_factory(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("must reject before any real factory/SDK call")
     monkeypatch.setattr(tool.factory, "create_robot", forbidden)
-    assert tool.main(["--execute", "--command", "右臂向前5度"]) == 1
+    assert tool.main(["--execute", "--action", "1", "--angle-deg", "5"]) == 1
 
 
 def test_default_preview_never_loads_sdk_or_opens_hardware():
@@ -115,7 +116,7 @@ class Block(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in {'fourier_aurora_client', 'serial', 'flexarm'}:
             raise AssertionError('unexpected import: ' + fullname)
 sys.meta_path.insert(0, Block())
-sys.argv = ['tools/aurora_arm_debug.py', '--command', '右臂向上抬30度']
+sys.argv = ['tools/aurora_arm_debug.py', '--action', '1', '--angle-deg', '30']
 runpy.run_path(sys.argv[0], run_name='__main__')
 '''], cwd=root, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -135,7 +136,7 @@ def test_sdk_fsm_and_feedback_failures_are_not_reported_as_success(monkeypatch, 
         client.failures["set_group_cmd"] = RuntimeError("DDS publish failed")
     else:
         client.follow_commands = False
-    assert tool.main(["--backend", "fake", "--simulate", "--command", "右臂向前30度"]) == 1
+    assert tool.main(["--backend", "fake", "--simulate", "--action", "1", "--angle-deg", "30"]) == 1
     assert client.closed
     assert '"arrived": true' not in capsys.readouterr().out
     if damage in ("fsm", "unstable"):
@@ -162,7 +163,7 @@ def test_real_confirmation_cancellation_with_injected_fake_transport(monkeypatch
     real_factory = tool.factory.create_robot
     monkeypatch.setattr(tool.factory, "create_robot",
                         lambda *args, **kwargs: real_factory("aurora-fake", session=session, side="right"))
-    assert tool.main(["--execute", "--command", "右臂向前5度"], input_fn=lambda _: answer) == 0
+    assert tool.main(["--execute", "--action", "1", "--angle-deg", "5"], input_fn=lambda _: answer) == 0
     assert not session.fake_client.commands
     assert session.fake_client.closed
 
@@ -181,7 +182,7 @@ def test_confirmation_delay_preserves_reviewed_relative_target(monkeypatch, caps
         session.fake_client.groups["right_manipulator"]["position"][0] = -math.radians(3)
         return "YES"
 
-    assert tool.main(["--execute", "--reference", "current", "--command", "右臂向前5度"],
+    assert tool.main(["--execute", "--reference", "current", "--action", "1", "--angle-deg", "5"],
                      input_fn=confirm) == 0
     assert session.fake_client.commands[-1]["right_manipulator"][0] == pytest.approx(-math.radians(5))
     assert '"arrived": true' in capsys.readouterr().out
@@ -191,7 +192,7 @@ def test_confirmation_delay_preserves_reviewed_relative_target(monkeypatch, caps
 def test_close_failure_is_reported_as_failure(monkeypatch, capsys):
     session = injected_session(monkeypatch)
     session.fake_client.failures["close"] = RuntimeError("close failed")
-    assert tool.main(["--backend", "fake", "--command", "状态"]) == 1
+    assert tool.main(["--backend", "fake", "--action", "8"]) == 1
     assert "清理失败" in capsys.readouterr().err
 
 
@@ -205,5 +206,55 @@ def test_interrupt_during_motion_stops_and_closes(monkeypatch):
         original_sleep(seconds)
 
     monkeypatch.setattr(session.clock, "sleep", sleep)
-    assert tool.main(["--backend", "fake", "--simulate", "--command", "右臂向前5度"]) == 130
+    assert tool.main(["--backend", "fake", "--simulate", "--action", "1", "--angle-deg", "5"]) == 130
     assert session.fake_client.closed
+
+
+def test_invalid_menu_input_and_cancelled_angle_never_send(monkeypatch, capsys):
+    session = injected_session(monkeypatch)
+    lines = iter(["9", "右臂向前30度", "1", "", "0"])
+    prompts = []
+
+    def read(prompt):
+        prompts.append(prompt)
+        return next(lines)
+
+    assert tool.main(["--backend", "fake", "--simulate"], input_fn=read) == 0
+    assert sum("请输入角度" in prompt for prompt in prompts) == 1
+    assert not session.fake_client.commands
+    assert "已取消，返回菜单" in capsys.readouterr().out
+
+
+def test_angle_retries_then_executes_selected_direction(monkeypatch, capsys):
+    session = injected_session(monkeypatch)
+    lines = iter(["２", "nan", "-5", "181", "30度", "１２．５", "0"])
+    assert tool.main(["--backend", "fake", "--simulate"], input_fn=lambda _: next(lines)) == 0
+    assert session.fake_client.commands[-1]["right_manipulator"][0] == pytest.approx(math.radians(12.5))
+    output = capsys.readouterr().out
+    assert output.count("输入错误") == 4
+    assert output.count('"arrived": true') == 1
+
+
+@pytest.mark.parametrize("interrupt,expected", [(EOFError, 0), (KeyboardInterrupt, 130)])
+def test_interrupt_at_angle_prompt_closes_without_sending(monkeypatch, interrupt, expected):
+    session = injected_session(monkeypatch)
+
+    def read(prompt):
+        if "动作编号" in prompt:
+            return "1"
+        raise interrupt
+
+    assert tool.main(["--backend", "fake", "--simulate"], input_fn=read) == expected
+    assert not session.fake_client.commands
+    assert session.fake_client.closed
+
+
+@pytest.mark.parametrize("options", [
+    ["--action", "1"], ["--angle-deg", "30"], ["--action", "8", "--angle-deg", "30"],
+    ["--action", "1", "--angle-deg", "nan"], ["--action", "1", "--angle-deg", "-1"],
+])
+def test_invalid_single_action_arguments_fail_before_connect(monkeypatch, options):
+    monkeypatch.setattr(tool.factory, "create_robot", lambda *a, **k: pytest.fail("unexpected connection"))
+    with pytest.raises(SystemExit) as exc:
+        tool.main(options)
+    assert exc.value.code == 2

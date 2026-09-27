@@ -11,6 +11,8 @@ Python tools -> SafetyController -> DyMotorArm (ctypes)
 
 ## Fourier Aurora 接入
 
+机器人开机、WiFi、SSH、viewturbo 代理、代码更新及现场 SDK/IMU 调试的交接流程，见 [机器人交接文档](docs/robot_handover.md)。
+
 当前 Aurora backend 固定使用已安装并审计的 **`fourier_aurora_client==0.1.8`**。提供左右臂方向/具名关节控制、有界摆动和单侧模型输入；默认是 **NO MOTION 离线 preview**。真实动作要求已验证的现场 profile、`--execute` 和交互输入恰好 `YES`。详见 [Aurora 控制与现场确认](docs/aurora_control.md) 和 [SDK 环境审计](docs/aurora_sdk_environment.md)。
 
 ```bash
@@ -26,15 +28,16 @@ python tools/aurora_control.py doctor
 
 Aurora 0.1.8 没有 lease；enable 仅允许本应用发送，停止发布/关闭客户端不等于物理停止。DyMotor 原 connect 会执行厂家使能流程，其无 `--execute` 行为仍按下文说明处理。
 
-中文交互调试（无需 IMU/袖套）：
+数字菜单调试（无需 IMU/袖套）：
 
 ```bash
 python tools/aurora_arm_debug.py --backend fake --simulate
 ```
 
-输入 `右臂向上抬30度`、`右臂向后30度`、`状态` 或 `退出`。
+先输入方向编号：`1` 向前、`2` 向后、`3` 侧摆，再输入角度，例如 `30`。
+`8` 查看当前角度，`0` 退出。
 默认角度相对标定零位，`--reference current` 改为当前姿态增量。
-真实连接、profile 和反馈结果说明见 [中文手臂 SDK 调试](docs/aurora_arm_debug.md)。
+真实连接、profile 和反馈结果说明见 [数字菜单手臂 SDK 调试](docs/aurora_arm_debug.md)。
 
 ## 项目当前阶段
 
@@ -73,6 +76,16 @@ buffer_duration_ms: 500
 ```
 
 这些是待实验验证的软件默认值，不是传感器或人体运动的最终参数。内部同步统一使用 monotonic timestamp；metadata 另存人类可读的 wall clock 开始时间。
+
+### 确认每枚 IMU 的实际串口
+
+```bash
+python tools/identify_imu_ports.py
+```
+
+自动同时读取全部 `/dev/ttyCH9344USB*`。逐个晃动 IMU，观察哪行数据变化；
+没有有效 IMU770 数据的端口显示 `NONE`。按 `Ctrl+C` 退出，再把对应端口填入
+`configs/sensors.yaml`。详见 [IMU 串口识别](docs/identify_imu_ports.md)。
 
 ### 读取与记录
 

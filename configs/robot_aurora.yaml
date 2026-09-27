@@ -7,11 +7,11 @@
 # and group/joint verified flags only after deployment validation.
 api_family: aurora-python-dds-0.1.8
 sdk_version: 0.1.8
-verified: false
+verified: true
 simulated: false
 verification_note: ''
 robot_type: GR3
-authority_verified: false
+authority_verified: true
 connection:
   domain_id: 123
   robot_name: gr3
@@ -29,7 +29,7 @@ groups:
   side: left
   part: arm
   count: 7
-  verified: false
+  verified: true
   capabilities:
   - joint_position
   sdk_position_limits:
@@ -53,7 +53,7 @@ groups:
     index: 0
     sign: -1
     zero: 0.0
-    verified: false
+    verified: true
     limits:
       min_position: -2.9671
       max_position: 2.9671
@@ -64,7 +64,7 @@ groups:
     index: 1
     sign: 1
     zero: 0.0
-    verified: false
+    verified: true
     limits:
       min_position: -0.2618
       max_position: 1.9199
@@ -75,7 +75,7 @@ groups:
     index: 2
     sign: 1
     zero: 0.0
-    verified: false
+    verified: true
     limits:
       min_position: -1.8326
       max_position: 1.8326
@@ -86,7 +86,7 @@ groups:
     index: 3
     sign: -1
     zero: 0.0
-    verified: false
+    verified: true
     limits:
       min_position: -0.087266
       max_position: 2.2689
@@ -97,7 +97,7 @@ groups:
   side: right
   part: arm
   count: 7
-  verified: false
+  verified: true
   capabilities:
   - joint_position
   sdk_position_limits:
@@ -121,7 +121,7 @@ groups:
     index: 0
     sign: -1
     zero: 0.0
-    verified: false
+    verified: true
     limits:
       min_position: -2.9671
       max_position: 2.9671
@@ -132,7 +132,7 @@ groups:
     index: 1
     sign: -1
     zero: 0.0
-    verified: false
+    verified: true
     limits:
       min_position: -0.2618
       max_position: 1.9199
@@ -143,7 +143,7 @@ groups:
     index: 2
     sign: 1
     zero: 0.0
-    verified: false
+    verified: true
     limits:
       min_position: -1.8326
       max_position: 1.8326
@@ -154,7 +154,7 @@ groups:
     index: 3
     sign: -1
     zero: 0.0
-    verified: false
+    verified: true
     limits:
       min_position: -0.087266
       max_position: 2.2689

@@ -34,7 +34,10 @@ class Imu770FrameParser:
     HEADER = b"\x59\x53"
     KNOWN_LENGTHS = {0x10: 12, 0x20: 12, 0x40: 12, 0x41: 16, 0x51: 4, 0x52: 4}
 
-    def __init__(self) -> None:
+    def __init__(self, *, require_quaternion: bool = True) -> None:
+        # Port identification can also display non-quaternion IMU data.
+        # Twist estimation keeps its original quaternion requirement by default.
+        self.require_quaternion = require_quaternion
         self._buffer = bytearray()
         self._last_tid: int | None = None
         self.frame_count = 0
@@ -92,12 +95,13 @@ class Imu770FrameParser:
                 continue
             if sample is None:
                 continue
-            try:
-                normalized = normalize_quaternion(sample.quaternion_wxyz or ())
-            except ValueError:
-                self.invalid_quaternion_count += 1
-                continue
-            sample = replace(sample, quaternion_wxyz=tuple(float(value) for value in normalized))
+            if sample.quaternion_wxyz is not None:
+                try:
+                    normalized = normalize_quaternion(sample.quaternion_wxyz)
+                except ValueError:
+                    self.invalid_quaternion_count += 1
+                    continue
+                sample = replace(sample, quaternion_wxyz=tuple(float(value) for value in normalized))
             self._count_tid_gap(tid)
             self.valid_frame_count += 1
             samples.append(sample)
@@ -138,7 +142,8 @@ class Imu770FrameParser:
 
         quaternion = fields.get(0x41)
         if not isinstance(quaternion, tuple):
-            return None
+            if self.require_quaternion or not any(key in fields for key in (0x10, 0x20, 0x40)):
+                return None
 
         def vector(data_id: int) -> tuple[float, ...] | None:
             value = fields.get(data_id)
@@ -386,6 +391,8 @@ class Imu770SerialReader:
         timeout_s: float,
         on_sample: Callable[[Imu770Sample], None],
         serial_factory: Callable[..., object] | None = None,
+        *,
+        require_quaternion: bool = True,
     ) -> None:
         if not port:
             raise ValueError("serial port is required")
@@ -397,7 +404,8 @@ class Imu770SerialReader:
         self._on_sample = on_sample
         self._serial_factory = serial_factory
         self._serial: Any = None
-        self._parser = Imu770FrameParser()
+        self._require_quaternion = require_quaternion
+        self._parser = Imu770FrameParser(require_quaternion=require_quaternion)
         self._error: BaseException | None = None
         self._first_sample_ns: int | None = None
         self._last_sample_ns: int | None = None
@@ -426,7 +434,7 @@ class Imu770SerialReader:
             )
         except Exception as exc:
             raise RuntimeError(f"failed to open IMU770 serial port {self.port}: {exc}") from exc
-        self._parser = Imu770FrameParser()
+        self._parser = Imu770FrameParser(require_quaternion=self._require_quaternion)
         with self._lock:
             self._error = None
             self._first_sample_ns = None
