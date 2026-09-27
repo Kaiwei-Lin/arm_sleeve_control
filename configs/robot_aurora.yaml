@@ -9,7 +9,7 @@ api_family: aurora-python-dds-0.1.8
 sdk_version: 0.1.8
 verified: true
 simulated: false
-verification_note: ''
+verification_note: '测试'
 robot_type: GR3
 authority_verified: true
 connection:
