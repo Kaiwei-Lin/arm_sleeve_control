@@ -18,7 +18,7 @@ def preview_joint(profile, *, side, joint, angle_deg, reference='neutral', curre
         raise ValueError(f'unsupported joint: {joint}')
     before = None if current_sdk is None else list(current_sdk)
     if before is not None:
-        group.check_vector(before)
+        group.check_vector(before, enforce_limits=not profile.smooth_limits)
     current, sdk_current, sdk_target, after = None, None, None, None
     if before is not None and entry.index is not None:
         sdk_current = before[entry.index]
@@ -44,7 +44,7 @@ def preview_joint(profile, *, side, joint, angle_deg, reference='neutral', curre
         issues.append(str(exc))
     if before is None:
         issues.append('current state unavailable: no live connection/snapshot')
-    if requested != clamped:
+    if requested != clamped and not profile.smooth_limits:
         issues.append('outside limits: clamped value is diagnostic only; execute rejects this request')
     if fsm not in profile.allowed_fsm:
         issues.append('FSM unavailable/not allowed')

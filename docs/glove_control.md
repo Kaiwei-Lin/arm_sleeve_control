@@ -34,8 +34,13 @@ Bend5 只有一个拇指传感器，因此拇指弯曲与横摆联动。
 
 `configs/robot_aurora.yaml` 已包含双侧六关节手部定义；其他仅有手臂的 profile
 不能用于手套执行。手部速度、步长、跟踪误差可在该 profile 调整。
+Aurora 默认 `smooth_limits: true`，手臂和灵巧手的数值限位均用于平滑约束：
+位置目标收回到上下限，速度与步长限制每次指令变化，跟踪误差限制目标超前量。
+实测位置或速度超限、启动时轻微移动不再触发退出；启动位置越界会逐步回到范围内。
+手部 `max_velocity: 0.8` 在 100 Hz 时对应每次最多 0.008 rad，快速手势仍会平滑跟随。
+启动日志各关节显示 `smooth_limits: True`。断连、过期反馈、非有限数值和设备故障仍会停止控制。
 如需缩小手势幅度，可在 `sensors.glove` 设置六项
-`open_pose_rad` / `closed_pose_rad`，顺序同上，且不能超出 Aurora 手部限位。
+`open_pose_rad` / `closed_pose_rad`，顺序同上；超出手部范围的配置会自动收回到边界。
 
 ## 快速查找手套串口
 

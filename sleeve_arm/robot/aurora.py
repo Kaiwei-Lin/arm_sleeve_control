@@ -96,8 +96,8 @@ class AuroraRobotArm(RobotArm):
             states = {}
             for group in self.groups:
                 entry = entries[group.name]
-                group.check_vector(entry.position, source="feedback")
-                if self.enabled and any(abs(a - b) > group.max_tracking_error
+                group.check_vector(entry.position, source="feedback", enforce_limits=not self.session.profile.smooth_limits)
+                if not self.session.profile.smooth_limits and self.enabled and any(abs(a - b) > group.max_tracking_error
                                         for a, b in zip(entry.position, self._targets[group.name])):
                     raise RobotError(f"{group.name}: full group tracking error exceeds limit")
             for key, (group, joint) in self._joints.items():
@@ -162,6 +162,10 @@ class AuroraRobotArm(RobotArm):
                 dt = min(now - self._last_times[group.name], self.session.profile.control_period_s)
                 if dt < 0:
                     raise RobotError("monotonic clock regressed")
+                if self.session.profile.smooth_limits:
+                    updated[group.name] = group.smooth_vector(
+                        self._targets[group.name], vector, self._snapshot.groups[group.name].position, dt)
+                    continue
                 for joint in group.joints:
                     value = joint.from_sdk(vector[joint.index])
                     old = joint.from_sdk(self._targets[group.name][joint.index])
@@ -177,6 +181,8 @@ class AuroraRobotArm(RobotArm):
             self._targets.update(updated)
             for name in updated:
                 self._last_times[name] = now
+            return {name: joint.from_sdk(updated[group.name][joint.index])
+                    for name, (group, joint) in self._joints.items() if name in targets}
         except BaseException as exc:
             self._latch(exc)
             raise

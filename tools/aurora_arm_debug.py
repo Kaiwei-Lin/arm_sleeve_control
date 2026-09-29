@@ -86,6 +86,7 @@ def show_status(profile, group, robot):
     vector, fsm = snapshot(robot, group)
     print(json.dumps({
         "simulation": profile.simulated, "fsm": fsm, "group": group.name,
+        "smooth_limits": profile.smooth_limits,
         "sdk_position_rad": vector,
         "semantic_deg": {j.name: math.degrees(j.from_sdk(vector[j.index])) for j in group.joints},
         "velocity_limits_rad_s": {
@@ -108,7 +109,7 @@ def run_command(args, profile, group, command, controller):
         print("拒绝执行：" + "; ".join(preview["blocking_reasons"]))
         return False
 
-    target = preview["requested_semantic_position"]  # Never send the diagnostic clamp.
+    target = (preview["clamped_target"] if profile.smooth_limits else preview["requested_semantic_position"])
     print(f"执行目标：{command.side} / {command.joint} → {math.degrees(target):.3f}°，按 profile 允许的最大速度运行")
 
     # --execute authorizes motion; still check PdStand/stance without changing FSM.
@@ -130,7 +131,10 @@ def run_command(args, profile, group, command, controller):
             "error_deg": math.degrees(measured - target), "elapsed_s": result.elapsed_s,
             "feedback_velocity_rad_s": measured_state.velocity,
         }, ensure_ascii=False, indent=2))
-        print("模拟反馈到位。" if args.simulate else "已观察到提交后的新鲜关节反馈到位；SDK 不提供送达回执。")
+        if result.arrived:
+            print("模拟反馈到位。" if args.simulate else "已观察到提交后的新鲜关节反馈到位；SDK 不提供送达回执。")
+        else:
+            print("目标尚未到位：跟踪限制正在等待反馈跟上，可继续输入下一条动作。")
         return True
     finally:
         # Disable publishing during idle input without recreating the SDK singleton.

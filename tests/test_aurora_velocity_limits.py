@@ -38,7 +38,7 @@ def test_normal_profiles_match_official_position_and_velocity_limits(filename):
 
 def slow_command_profile():
     """Keep the original 0.3 rad/s regression independent of site speed settings."""
-    profile = gr3_fake_profile()
+    profile = replace(gr3_fake_profile(), smooth_limits=False)
     return replace(profile, groups=tuple(
         replace(group, joints=tuple(
             replace(joint, limits=replace(joint.limits, max_velocity=0.3,

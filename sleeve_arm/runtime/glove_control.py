@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import replace
 
 from sleeve_arm.config import GloveConfig
 from sleeve_arm.sources.glove import Bend5GloveSource
@@ -24,10 +25,13 @@ class GloveRuntime:
         if mode == "real" and not config.port:
             raise ValueError("set sensors.glove.port before using --glove real")
         for pose in (config.open_pose_rad, config.closed_pose_rad):
-            if len(pose) != 6 or any(not math.isfinite(v) or not low <= v <= high
-                                     for v, (low, high) in zip(pose, HAND_LIMITS)):
-                raise ValueError("glove open/closed poses exceed Aurora hand limits")
-        self.config, self.mode = config, mode
+            if len(pose) != 6 or any(not math.isfinite(v) for v in pose):
+                raise ValueError("glove open/closed poses require six finite values")
+        self.config = replace(config, **{
+            name: tuple(min(max(v, low), high) for v, (low, high) in zip(getattr(config, name), HAND_LIMITS))
+            for name in ("open_pose_rad", "closed_pose_rad")
+        })
+        self.mode = mode
         self.clock = clock or time
         self.source = None
 

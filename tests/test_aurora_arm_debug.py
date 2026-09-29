@@ -91,10 +91,14 @@ def test_group_and_joint_routing(monkeypatch, side, action, angle, index, sign):
     ("3", "150"),
     ("5", "150"),
 ])
-def test_rejects_limits_without_sending(monkeypatch, action, angle):
+def test_outside_target_is_clamped_and_sent_gradually(monkeypatch, action, angle):
     session = injected_session(monkeypatch)
-    assert tool.main(["--backend", "fake", "--simulate", "--action", action, "--angle-deg", angle]) == 1
-    assert not session.fake_client.commands
+    assert tool.main(["--backend", "fake", "--simulate", "--action", action, "--angle-deg", angle]) == 0
+    group = session.profile.selected_groups(("right",))[0]
+    joint = next(j for j in group.joints if j.name == tool.MENU_ACTIONS[action][1])
+    requested = math.radians(float(angle)) * tool.MENU_ACTIONS[action][2]
+    target = min(max(requested, joint.limits.min_position), joint.limits.max_position)
+    assert session.fake_client.commands[-1][group.name][joint.index] == pytest.approx(joint.to_sdk(target))
     assert session.fake_client.closed
 
 
@@ -109,7 +113,7 @@ def test_unverified_real_profile_rejected_before_factory(monkeypatch):
 
 def test_default_preview_never_loads_sdk_or_opens_hardware():
     root = Path(__file__).resolve().parents[1]
-    result = subprocess.run([sys.executable, "-c", '''
+    result = subprocess.run([sys.executable, "-X", "utf8", "-c", '''
 import importlib.abc
 import runpy
 import sys
@@ -120,7 +124,7 @@ class Block(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, Block())
 sys.argv = ['tools/aurora_arm_debug.py', '--action', '1', '--angle-deg', '30']
 runpy.run_path(sys.argv[0], run_name='__main__')
-'''], cwd=root, capture_output=True, text=True, timeout=10)
+'''], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert '"status": "NO MOTION"' in result.stdout
     assert '"current_sdk_position": null' in result.stdout
@@ -248,8 +252,8 @@ def test_motion_uses_maximum_allowed_steps_until_exact_target(monkeypatch, actio
     assert client.closed
 
 
-@pytest.mark.parametrize("delay,expected", [(0.001, 0), (0.02, 1)])
-def test_fast_motion_handles_small_jitter_and_stops_on_scheduling_delay(monkeypatch, capsys, delay, expected):
+@pytest.mark.parametrize("delay", [0.001, 0.02])
+def test_fast_motion_handles_jitter_without_expanding_command_steps(monkeypatch, capsys, delay):
     session = injected_session(monkeypatch)
     original_sleep = session.clock.sleep
 
@@ -257,14 +261,15 @@ def test_fast_motion_handles_small_jitter_and_stops_on_scheduling_delay(monkeypa
         original_sleep(seconds + (delay if session.fake_client.commands else 0.0))
 
     monkeypatch.setattr(session.clock, "sleep", delayed_sleep)
-    assert tool.main(["--backend", "fake", "--simulate", "--action", "1", "--angle-deg", "5"]) == expected
+    assert tool.main(["--backend", "fake", "--simulate", "--action", "1", "--angle-deg", "5"]) == 0
     assert session.fake_client.closed
     output = capsys.readouterr()
-    if expected == 0:
-        assert '"arrived": true' in output.out
-    else:
-        assert "scheduling delay" in output.err
-        assert len(session.fake_client.commands) == 1
+    assert '"arrived": true' in output.out
+    previous = 0.
+    for command in session.fake_client.commands:
+        value = command["right_manipulator"][0]
+        assert abs(value - previous) <= .0775 + 1e-10
+        previous = value
 
 
 def test_fast_motion_still_requires_arrival_feedback(monkeypatch, capsys):

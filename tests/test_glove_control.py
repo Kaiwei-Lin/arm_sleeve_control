@@ -1,4 +1,5 @@
 """Bend5 wire data through the real calibration code into a fake Aurora session."""
+from dataclasses import replace
 import json
 from pathlib import Path
 import shutil
@@ -11,7 +12,9 @@ import pytest
 import yaml
 
 from sleeve_arm.config import DEFAULT_SENSOR_CONFIG_PATH, load_sensor_config
+from sleeve_arm.control.safety import FeedbackError, validate_feedback
 from sleeve_arm.domain import MotionIntent
+from sleeve_arm.domain.joint import JointState
 from sleeve_arm.robot import factory
 from sleeve_arm.robot.aurora_fake import FakeClock, fake_session, gr3_fake_profile
 from sleeve_arm.runtime.configuration import load_configs, parse_args
@@ -95,11 +98,13 @@ def test_startup_zeroing_does_not_expose_uncalibrated_targets():
 
 @pytest.mark.parametrize("parts,groups", [(("arm", "hand"), {"right_manipulator", "right_hand"}),
                                           (("hand",), {"right_hand"})])
-def test_shared_session_batch_limits_and_single_hand_isolation(monkeypatch, parts, groups):
+@pytest.mark.parametrize("hand_velocity", [0., 2., -2.])
+def test_shared_session_batch_limits_and_single_hand_isolation(monkeypatch, parts, groups, hand_velocity):
     args = parse_args(["--robot", "aurora-fake", "--side", "right", "--source-side", "right",
                        "--glove", "fake", "--imus", "fake"])
     configs = load_configs(args)
     session = fake_session(profile=gr3_fake_profile())
+    session.fake_client.groups["right_hand"]["velocity"] = [hand_velocity] * 6
     actual_factory = factory.create_robot
     monkeypatch.setattr(factory, "create_robot", lambda backend, config, **kw:
                         actual_factory(backend, config, session=session, **kw))
@@ -132,6 +137,29 @@ def test_shared_session_batch_limits_and_single_hand_isolation(monkeypatch, part
         runtime.shutdown()
         glove.close()
     assert session.fake_client.close_count == 1
+
+
+def test_hand_velocity_policy_preserves_feedback_checks_and_can_be_reenabled():
+    profile = gr3_fake_profile()
+    for side in ("left", "right"):
+        assert all(j.smooth_limits
+                   for j in profile.control_config((side,)).joints.values())
+        limits = profile.control_config((side,), ("hand",)).joints
+        assert all(j.smooth_limits for j in limits.values())
+        joint = limits["thumb_bend"]
+        state = JointState(name=joint.name, position=.5, velocity=2.,
+                           current=None, torque=None, state=None, bus=None, error=None)
+        validate_feedback(state, joint)
+        with pytest.raises(FeedbackError, match="velocity exceeds"):
+            validate_feedback(state, replace(joint, smooth_limits=False))
+        for velocity in (None, float("nan"), float("inf")):
+            with pytest.raises(FeedbackError, match="velocity"):
+                validate_feedback(replace(state, velocity=velocity), joint)
+        validate_feedback(replace(state, position=joint.max_position + .1), joint)
+        validate_feedback(state, joint, expected_position=1.)
+    for value in (None, 0, "false"):
+        with pytest.raises(ValueError, match="smooth_limits must be boolean"):
+            replace(profile, smooth_limits=value).validate()
 
 
 def test_app_stops_both_outputs_and_closes_glove_on_dropout(monkeypatch):

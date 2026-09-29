@@ -50,9 +50,22 @@ def safe_target(
     current: float,
     requested: float,
     dt: float | None = None,
+    *, measured: float | None = None,
 ) -> float:
-    limited = limit_position_change(config, current, clamp_position(config, requested), dt)
-    return clamp_position(config, limited)
+    target = clamp_position(config, requested)
+    smooth = getattr(config, "smooth_limits", False)
+    if smooth and measured is not None and config.max_tracking_error is not None:
+        if not math.isfinite(measured):
+            raise FeedbackError(f"{config.name}: current position is not finite")
+        margin = config.max_tracking_error
+        target = clamp_position(config, min(max(target, measured - margin), measured + margin))
+    if smooth and dt == 0:
+        if not math.isfinite(current):
+            raise FeedbackError(f"{config.name}: current position is not finite")
+        return current
+    limited = limit_position_change(config, current, target, dt)
+    # An out-of-range starting pose must return gradually, not jump to the bound.
+    return limited if smooth else clamp_position(config, limited)
 
 
 def validate_feedback(
@@ -60,6 +73,7 @@ def validate_feedback(
     config: JointConfig,
     expected_position: float | None = None,
 ) -> None:
+    smooth = getattr(config, "smooth_limits", False)
     if state.name != config.name:
         raise FeedbackError(f"feedback name mismatch: {state.name} != {config.name}")
     if state.position is None:
@@ -78,9 +92,9 @@ def validate_feedback(
         raise FeedbackError(f"{state.name}: motor error feedback is unavailable")
     if state.error is not None and state.error != 0:
         raise FeedbackError(f"{state.name}: motor error code {state.error}")
-    if config.min_position is not None and state.position < config.min_position:
+    if not smooth and config.min_position is not None and state.position < config.min_position:
         raise FeedbackError(f"{state.name}: feedback is below min_position")
-    if config.max_position is not None and state.position > config.max_position:
+    if not smooth and config.max_position is not None and state.position > config.max_position:
         raise FeedbackError(f"{state.name}: feedback is above max_position")
     feedback_limit = getattr(config, "max_feedback_velocity", None)
     limit_name = "max_feedback_velocity"
@@ -90,7 +104,7 @@ def validate_feedback(
     if feedback_limit is not None:
         if state.velocity is None:
             raise FeedbackError(f"{state.name}: velocity feedback is unavailable")
-        if abs(state.velocity) > feedback_limit:
+        if not smooth and abs(state.velocity) > feedback_limit:
             raise FeedbackError(
                 f"{state.name}: feedback velocity exceeds {limit_name}; "
                 f"measured_rad_s={state.velocity:.9g}; limit_rad_s={feedback_limit:.9g}; "
@@ -99,8 +113,8 @@ def validate_feedback(
     if config.max_current is not None:
         if state.current is None:
             raise FeedbackError(f"{state.name}: current feedback is unavailable")
-        if abs(state.current) > config.max_current:
+        if not smooth and abs(state.current) > config.max_current:
             raise FeedbackError(f"{state.name}: current exceeds max_current")
-    if config.max_tracking_error is not None and expected_position is not None:
+    if not smooth and config.max_tracking_error is not None and expected_position is not None:
         if abs(state.position - expected_position) > config.max_tracking_error:
             raise FeedbackError(f"{state.name}: tracking error exceeds max_tracking_error")
