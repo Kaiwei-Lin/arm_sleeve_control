@@ -14,6 +14,9 @@ class JointSafetyParameters:
     max_tracking_error: float | None = None
     max_position_step: float | None = None
     require_motor_error: bool = False
+    # Separate measured overspeed detection from the command slew rate.
+    # None preserves the legacy fallback to max_velocity.
+    max_feedback_velocity: float | None = None
 
 
 @dataclass(frozen=True)

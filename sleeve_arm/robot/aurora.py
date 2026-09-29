@@ -96,7 +96,7 @@ class AuroraRobotArm(RobotArm):
             states = {}
             for group in self.groups:
                 entry = entries[group.name]
-                group.check_vector(entry.position)
+                group.check_vector(entry.position, source="feedback")
                 if self.enabled and any(abs(a - b) > group.max_tracking_error
                                         for a, b in zip(entry.position, self._targets[group.name])):
                     raise RobotError(f"{group.name}: full group tracking error exceeds limit")

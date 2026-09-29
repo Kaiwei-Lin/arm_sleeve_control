@@ -79,7 +79,7 @@ class ImuFrame:
 @dataclass(frozen=True, slots=True)
 class SensorSample:
     timestamp: float
-    sleeve: SleeveFrame
+    sleeve: SleeveFrame | None
     imu1: ImuFrame | None = None
     imu2: ImuFrame | None = None
 

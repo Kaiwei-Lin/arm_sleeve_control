@@ -20,6 +20,15 @@ GR3_SEMANTIC_INDICES = dict(shoulder_flexion=0, shoulder_abduction=1,
                             upper_arm_rotation=2, elbow_flexion=3,
                             wrist_yaw=4, wrist_pitch=5, wrist_roll=6)
 
+# Published GR3 URDF joint velocity ceilings (rad/s), for both arm sides.
+# These bound measured feedback; command speed still comes from the site profile.
+# https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/robot_specs/
+GR3_ARM_MAX_VELOCITY = dict(
+    shoulder_flexion=7.75, shoulder_abduction=7.75,
+    upper_arm_rotation=6.28, elbow_flexion=6.28, wrist_yaw=6.28,
+    wrist_pitch=9.2153, wrist_roll=9.2153,
+)
+
 
 def finite(value, label, *, positive=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -66,7 +75,7 @@ class AuroraGroup:
     capabilities: tuple[str, ...] = ('joint_position',)
     verified: bool = False
 
-    def check_vector(self, vector):
+    def check_vector(self, vector, *, source="unspecified"):
         if not self.count or len(vector) != self.count:
             raise ValueError(f'{self.name}: vector dimension mismatch/unverified DOF')
         for i, value in enumerate(vector):
@@ -74,7 +83,11 @@ class AuroraGroup:
             if self.sdk_position_limits is not None:
                 low, high = self.sdk_position_limits[i]
                 if not low <= value <= high:
-                    raise ValueError(f'{self.name}[{i}]: SDK position outside limits')
+                    raise ValueError(
+                        f'{self.name}[{i}]: SDK position outside limits; source={source}; '
+                        f'value_rad={value:.17g}; min_rad={low:.17g}; max_rad={high:.17g}; '
+                        f'excess_rad={max(low - value, value - high):.9g}'
+                    )
         for joint in self.joints:
             if joint.index is not None and joint.sign is not None and joint.zero is not None:
                 value = joint.from_sdk(vector[joint.index])
@@ -118,6 +131,13 @@ class AuroraRobotProfile:
         if len(selected) != len(sides) * len(parts):
             raise ValueError('unsupported side/part capability')
         return selected
+
+    def feedback_velocity_limit(self, group, joint):
+        if joint.limits.max_feedback_velocity is not None:
+            return joint.limits.max_feedback_velocity
+        if self.robot_type == 'GR3' and group.part == 'arm':
+            return GR3_ARM_MAX_VELOCITY[joint.name]
+        return joint.limits.max_velocity
 
     def validate(self, *, execute=False, simulation=False, groups=None):
         if self.api_family != API_FAMILY or self.sdk_version != SDK_VERSION:
@@ -186,10 +206,18 @@ class AuroraRobotProfile:
                     raise ValueError('direction/sign must be -1 or 1')
                 if joint.zero is not None:
                     finite(joint.zero, 'zero')
-                for field in ('min_position', 'max_position', 'max_velocity', 'max_position_step', 'max_tracking_error', 'max_current'):
+                for field in ('min_position', 'max_position', 'max_velocity', 'max_feedback_velocity',
+                              'max_position_step', 'max_tracking_error', 'max_current'):
                     value = getattr(joint.limits, field)
                     if value is not None:
                         finite(value, field, positive=field not in ('min_position', 'max_position'))
+                feedback_limit = self.feedback_velocity_limit(group, joint)
+                if (feedback_limit is not None and joint.limits.max_velocity is not None
+                        and joint.limits.max_velocity > feedback_limit):
+                    raise ValueError(f'{joint.name}: max_velocity exceeds feedback velocity limit')
+                if (self.robot_type == 'GR3' and group.part == 'arm'
+                        and feedback_limit > GR3_ARM_MAX_VELOCITY[joint.name]):
+                    raise ValueError(f'{joint.name}: max_feedback_velocity exceeds GR3 joint velocity limit')
                 lo, hi = joint.limits.min_position, joint.limits.max_position
                 if lo is not None and hi is not None and lo >= hi:
                     raise ValueError('invalid joint limits')
@@ -244,7 +272,8 @@ class AuroraRobotProfile:
                 name = f'{group.side}.{joint.name}' if len(sides) > 1 else joint.name
                 if name in joints:
                     raise ValueError('ambiguous joint names')
-                joints[name] = replace(joint.limits, name=name)
+                joints[name] = replace(joint.limits, name=name,
+                                       max_feedback_velocity=self.feedback_velocity_limit(group, joint))
         # This default is only for constructing incomplete read-only profiles.
         period = self.control_period_s if self.control_hz is not None else 0.02
         return ControlConfig(SafetyConfig(2, period, period), joints)

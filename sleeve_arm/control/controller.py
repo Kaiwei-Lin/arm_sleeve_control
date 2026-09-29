@@ -128,17 +128,49 @@ class SafeArmController:
                     limits = self.config.joints[name]
                     if not limits.min_position <= value <= limits.max_position:
                         raise SafetyError(f"{name}: target outside limits")
+            # Command slew and measured tracking are distinct constraints.
+            # Aurora also checks command-to-command slew in its backend.
             safe = {
                 name: safe_target(
                     self.config.joints[name],
-                    states[name].position,
+                    (self._last_targets[name] if getattr(self.robot, "strict_limits", False)
+                     else states[name].position),
                     target,
                     elapsed,
                 )
                 for name, target in checked.items()
             }
+            if getattr(self.robot, "strict_limits", False):
+                for name, target in safe.items():
+                    tracking_limit = self.config.joints[name].max_tracking_error
+                    if tracking_limit is None or not math.isfinite(tracking_limit) or tracking_limit <= 0:
+                        raise SafetyError(f"{name}: finite positive tracking limit required")
+                    tracking_error = abs(target - states[name].position)
+                    if tracking_error > tracking_limit:
+                        raise SafetyError(
+                            f"{name}: proposed target tracking error exceeds limit; "
+                            f"measured={states[name].position:.9g}; "
+                            f"previous_target={self._last_targets[name]:.9g}; "
+                            f"proposed={target:.9g}; error={tracking_error:.9g}; "
+                            f"limit={tracking_limit:.9g}; effective_dt_s={elapsed:.9g}"
+                        )
             if require_exact and any(abs(safe[n] - checked[n]) > 1e-10 for n in checked):
-                raise SafetyError("trajectory limited by safety; original request not completed")
+                details = {
+                    name: {
+                        "measured": states[name].position,
+                        "previous_target": self._last_targets.get(name),
+                        "requested": checked[name],
+                        "limited": safe[name],
+                        "effective_dt_s": elapsed,
+                        "max_velocity": self.config.joints[name].max_velocity,
+                        "max_position_step": self.config.joints[name].max_position_step,
+                    }
+                    for name in checked if abs(safe[name] - checked[name]) > 1e-10
+                }
+                raise SafetyError(
+                    "trajectory limited by safety; original request not completed; "
+                    "diagnostics=" + repr(details)
+                )
             self.robot.set_joint_positions_checked(safe, states)
         except BaseException as exc:
             self._emergency_stop(exc)

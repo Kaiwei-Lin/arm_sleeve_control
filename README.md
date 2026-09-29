@@ -392,6 +392,48 @@ python tools/run_sleeve_elbow.py --sleeve real --robot dymotor --execute
 
 ## Phase 4 — 可选择的肩部推理器
 
+### 终端查看动作，不控制机器人
+
+```bash
+bash control.sh --print-only
+# 可限制运行时间（标定完成后开始计时），Ctrl+C 也可退出：
+bash control.sh --print-only --duration 30
+```
+
+按提示完成原有的肩部零位、前抬方向和上臂旋转标定后，每秒输出动作名称
+（前抬、侧抬、后伸、静止等）、肩前屈/后伸、肩外展及上臂旋转角度（度），
+以及置信度和传感器状态。双 IMU 打印模式默认不打开 Sleeve 串口，直接由 IMU 数据驱动刷新，
+肘屈曲角度显示“未提供”。需要同时读取袖套、查看肘关节时，使用
+`bash control.sh --print-only --sleeve real`。
+
+显示的是传感器推算的语义角度，未经机器人限位或速度限制，
+不是机器人实测姿态；未提供的关节角度显示“未提供”。
+
+此模式只读取传感器，不创建机器人连接、不加载机器人配置或 SDK、不使能电机、不发送动作。
+仍需当前用户有传感器串口访问权限。`bash control.sh` 仍进入真机控制模式；
+`--print-only` 与 `--execute` 互斥。
+
+`bash control.sh` 的 Aurora 双 IMU 控制现在也默认跳过袖套，不打开 `/dev/ttyUSB2`。
+完成标定并输入 `YES` 后，只跟随 IMU 的肩部与上臂旋转输入，肘关节保持使能时的位置。
+需要袖套驱动肘关节时，使用 `bash control.sh --sleeve real`。
+
+模型控制会把超出机器人关节位置范围的有限目标角度自动截到 YAML 中的
+`min_position` / `max_position`，避免仅因传感器目标越界而报 `target outside limits`。
+例如，上臂旋转输入 `2.0 rad` 时，目标取 `1.8326 rad`；输入 `-2.0 rad` 时，取 `-1.8326 rad`。
+机器人仍按单步和速度限制逐步接近该目标；跟踪误差、反馈异常等保护继续生效。
+`--print-only` 仍显示原始传感器估计角度。
+
+`--sleeve auto`（默认）在双 IMU Aurora 控制或打印模式下禁用袖套，其他模式使用真实袖套。
+显式 `--sleeve none` 支持双 IMU 的 Aurora、Aurora 模拟和打印模式；
+`flexarm_estimator` 肩部模型仍需要袖套数据。
+
+也可直接运行 `python tools/run_model_control.py --print-only --shoulder-predictor dual_imu`。
+无需传感器的模拟检查可使用
+`bash control.sh --print-only --imus fake --calibration-seconds 0.2 --duration 3`，
+仍需按提示回车完成模拟标定。
+
+### 肩部推理器选择
+
 `tools/run_model_control.py` 同时保留两条肩部推理链。命令行 `--shoulder-predictor` 优先于 `configs/phase4.yaml` 中的 `predictor.backend`：
 
 ```powershell

@@ -1,4 +1,5 @@
 """Interactive arm diagnostics with injected SDK/clock; never connect hardware."""
+from dataclasses import replace
 import math
 from pathlib import Path
 import subprocess
@@ -31,8 +32,8 @@ def test_ambiguous_or_invalid_input_is_rejected(text):
         tool.parse_angle(text)
 
 
-def injected_session(monkeypatch):
-    session = tool.fake_session(profile=tool.gr3_fake_profile())
+def injected_session(monkeypatch, *, profile=None):
+    session = tool.fake_session(profile=profile or tool.gr3_fake_profile())
     monkeypatch.setattr(tool, "fake_session", lambda **kwargs: session)
     return session
 
@@ -86,19 +87,20 @@ def test_group_and_joint_routing(monkeypatch, side, action, angle, index, sign):
     assert session.fake_client.commands[-1][group][index] == pytest.approx(sign * math.radians(angle))
 
 
-@pytest.mark.parametrize("action,angle,extra", [
-    ("3", "150", []),
-    ("5", "150", []),
-    ("1", "30", ["--duration", "0.1"]),
+@pytest.mark.parametrize("action,angle", [
+    ("3", "150"),
+    ("5", "150"),
 ])
-def test_rejects_limits_and_duration_without_sending(monkeypatch, action, angle, extra):
+def test_rejects_limits_without_sending(monkeypatch, action, angle):
     session = injected_session(monkeypatch)
-    assert tool.main(["--backend", "fake", "--simulate", "--action", action, "--angle-deg", angle, *extra]) == 1
+    assert tool.main(["--backend", "fake", "--simulate", "--action", action, "--angle-deg", angle]) == 1
     assert not session.fake_client.commands
     assert session.fake_client.closed
 
 
 def test_unverified_real_profile_rejected_before_factory(monkeypatch):
+    profile = replace(tool.gr3_fake_profile(), verified=False, simulated=False)
+    monkeypatch.setattr(tool, "load_aurora_profile", lambda _: profile)
     def forbidden(*args, **kwargs):
         pytest.fail("must reject before any real factory/SDK call")
     monkeypatch.setattr(tool.factory, "create_robot", forbidden)
@@ -154,38 +156,127 @@ def test_input_interrupt_always_closes_session(monkeypatch, interrupt, expected)
     assert not session.fake_client.commands
 
 
-@pytest.mark.parametrize("answer", ["no", "yes", "YES "])
-def test_real_confirmation_cancellation_with_injected_fake_transport(monkeypatch, answer):
+def injected_execution_session(monkeypatch):
     session = tool.fake_session(profile=tool.gr3_fake_profile())
     monkeypatch.setattr(tool, "load_aurora_profile", lambda _: session.profile)
-    # Only the transport is simulated. Exercise the real CLI confirmation path.
+    # Only the transport is simulated. Exercise the --execute CLI path.
     monkeypatch.setattr(type(session.profile), "validate", lambda *args, **kwargs: None)
     real_factory = tool.factory.create_robot
     monkeypatch.setattr(tool.factory, "create_robot",
                         lambda *args, **kwargs: real_factory("aurora-fake", session=session, side="right"))
-    assert tool.main(["--execute", "--action", "1", "--angle-deg", "5"], input_fn=lambda _: answer) == 0
-    assert not session.fake_client.commands
+    return session
+
+
+def test_real_single_action_executes_without_confirmation(monkeypatch):
+    session = injected_execution_session(monkeypatch)
+
+    def unexpected_input(prompt):
+        pytest.fail(f"single action must not prompt: {prompt}")
+
+    assert tool.main(["--execute", "--action", "1", "--angle-deg", "5"], input_fn=unexpected_input) == 0
+    assert session.fake_client.commands[-1]["right_manipulator"][0] == pytest.approx(-math.radians(5))
     assert session.fake_client.closed
 
 
-def test_confirmation_delay_preserves_reviewed_relative_target(monkeypatch, capsys):
-    session = tool.fake_session(profile=tool.gr3_fake_profile())
-    monkeypatch.setattr(tool, "load_aurora_profile", lambda _: session.profile)
-    monkeypatch.setattr(type(session.profile), "validate", lambda *args, **kwargs: None)
-    real_factory = tool.factory.create_robot
-    monkeypatch.setattr(tool.factory, "create_robot",
-                        lambda *args, **kwargs: real_factory("aurora-fake", session=session, side="right"))
+def test_real_menu_executes_repeated_actions_without_confirmation(monkeypatch, capsys):
+    session = injected_execution_session(monkeypatch)
+    lines = iter(["1", "5", "2", "5", "0"])
 
-    def confirm(_):
+    def read(prompt):
+        assert "YES" not in prompt
+        return next(lines)
+
+    assert tool.main(["--execute"], input_fn=read) == 0
+    assert session.fake_client.commands[-1]["right_manipulator"][0] == pytest.approx(math.radians(5))
+    assert capsys.readouterr().out.count('"arrived": true') == 2
+    assert session.fake_client.closed
+
+
+def test_preparation_delay_preserves_previewed_relative_target(monkeypatch, capsys):
+    session = injected_execution_session(monkeypatch)
+    prepare = session.prepare_control_mode
+
+    def delayed_prepare(**kwargs):
+        prepare(**kwargs)
         session.clock.sleep(20.)
-        # Actual arm position changes while the user reviews the initial 0°→5° preview.
+        # Actual arm position changes after the initial 0°→5° preview.
         session.fake_client.groups["right_manipulator"]["position"][0] = -math.radians(3)
-        return "YES"
 
-    assert tool.main(["--execute", "--reference", "current", "--action", "1", "--angle-deg", "5"],
-                     input_fn=confirm) == 0
+    monkeypatch.setattr(session, "prepare_control_mode", delayed_prepare)
+    assert tool.main(["--execute", "--reference", "current", "--action", "1", "--angle-deg", "5"]) == 0
     assert session.fake_client.commands[-1]["right_manipulator"][0] == pytest.approx(-math.radians(5))
     assert '"arrived": true' in capsys.readouterr().out
+    assert session.fake_client.closed
+
+
+@pytest.mark.parametrize("max_step", [0.03, 0.001])
+@pytest.mark.parametrize("action,angle", [("1", 0), ("1", 0.1), ("1", 5), ("1", 30), ("2", 5)])
+def test_motion_uses_maximum_allowed_steps_until_exact_target(monkeypatch, action, angle, max_step):
+    profile = tool.gr3_fake_profile()
+    profile = replace(profile, groups=tuple(
+        replace(group, joints=tuple(
+            replace(joint, limits=replace(joint.limits, max_position_step=max_step))
+            for joint in group.joints
+        )) for group in profile.groups
+    ))
+    session = injected_session(monkeypatch, profile=profile)
+    client = session.fake_client
+    publish = client.set_group_cmd
+    times = []
+
+    def record(*args, **kwargs):
+        times.append(session.clock.monotonic())
+        return publish(*args, **kwargs)
+
+    monkeypatch.setattr(client, "set_group_cmd", record)
+    assert tool.main(["--backend", "fake", "--simulate", "--action", action,
+                      "--angle-deg", str(angle)]) == 0
+    group = profile.selected_groups(("right",))[0]
+    joint = next(j for j in group.joints if j.name == "shoulder_flexion")
+    target = math.radians(angle) * (1 if action == "1" else -1)
+    period = profile.control_period_s
+    max_change = min(joint.limits.max_velocity * period, max_step)
+    previous = 0.0
+    for command in client.commands:
+        value = joint.from_sdk(command[group.name][joint.index])
+        assert abs(value - previous) == pytest.approx(min(max_change, abs(target - previous)), abs=1e-10)
+        previous = value
+    assert previous == pytest.approx(target)
+    expected_ticks = max(1, math.ceil(abs(target) / max_change))
+    assert len(client.commands) == expected_ticks
+    assert times[-1] - times[0] + period == pytest.approx(expected_ticks * period)
+    assert client.closed
+
+
+@pytest.mark.parametrize("delay,expected", [(0.001, 0), (0.02, 1)])
+def test_fast_motion_handles_small_jitter_and_stops_on_scheduling_delay(monkeypatch, capsys, delay, expected):
+    session = injected_session(monkeypatch)
+    original_sleep = session.clock.sleep
+
+    def delayed_sleep(seconds):
+        original_sleep(seconds + (delay if session.fake_client.commands else 0.0))
+
+    monkeypatch.setattr(session.clock, "sleep", delayed_sleep)
+    assert tool.main(["--backend", "fake", "--simulate", "--action", "1", "--angle-deg", "5"]) == expected
+    assert session.fake_client.closed
+    output = capsys.readouterr()
+    if expected == 0:
+        assert '"arrived": true' in output.out
+    else:
+        assert "scheduling delay" in output.err
+        assert len(session.fake_client.commands) == 1
+
+
+def test_fast_motion_still_requires_arrival_feedback(monkeypatch, capsys):
+    session = injected_session(monkeypatch)
+    session.fake_client.follow_commands = False
+    started = session.clock.monotonic()
+    # Outside arrival tolerance, but below the tracking-error limit.
+    assert tool.main(["--backend", "fake", "--simulate", "--action", "1", "--angle-deg", "2"]) == 1
+    assert session.clock.monotonic() - started < session.profile.arrival_timeout_s + 1
+    output = capsys.readouterr()
+    assert "arrival timed out" in output.err
+    assert '"arrived": true' not in output.out
     assert session.fake_client.closed
 
 
@@ -252,6 +343,7 @@ def test_interrupt_at_angle_prompt_closes_without_sending(monkeypatch, interrupt
 @pytest.mark.parametrize("options", [
     ["--action", "1"], ["--angle-deg", "30"], ["--action", "8", "--angle-deg", "30"],
     ["--action", "1", "--angle-deg", "nan"], ["--action", "1", "--angle-deg", "-1"],
+    ["--duration", "8"],
 ])
 def test_invalid_single_action_arguments_fail_before_connect(monkeypatch, options):
     monkeypatch.setattr(tool.factory, "create_robot", lambda *a, **k: pytest.fail("unexpected connection"))

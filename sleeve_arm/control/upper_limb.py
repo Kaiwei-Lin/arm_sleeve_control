@@ -65,9 +65,14 @@ class UpperLimbService:
         return self.move_joints({key: math.radians(finite(angle_deg, "angle_deg"))},
                                 duration_s=duration_s, reference=reference)
 
-    def move_joints(self, targets_rad: Mapping[str, float], *, duration_s, reference="neutral"):
-        """Batch semantic radians; dual-arm keys are 'left.name' / 'right.name'."""
-        duration = self._duration(duration_s)
+    def move_joints(self, targets_rad: Mapping[str, float], *, duration_s=None, reference="neutral"):
+        """Batch semantic radians; omit duration for maximum configured speed.
+
+        Dual-arm keys are 'left.name' / 'right.name'. An explicit duration uses
+        the existing cubic trajectory; otherwise the controller limits each
+        command step until all final targets have actually been submitted.
+        """
+        duration = None if duration_s is None else self._duration(duration_s)
         if reference not in ("neutral", "current"):
             raise ValueError("reference must be neutral or current")
         if not targets_rad or set(targets_rad) - set(self.controller.config.joints):
@@ -77,6 +82,8 @@ class UpperLimbService:
         starts = {key: states[key].position for key in values}
         targets = {k: self._bounds(k, v + (starts[k] if reference == "current" else 0.0))
                    for k, v in values.items()}
+        if duration is None:
+            return self._run(lambda elapsed: targets, None, targets)
         for key, target in targets.items():
             peak = 1.5 * abs(target - starts[key]) / duration  # cubic smoothstep derivative
             self._speed(key, peak)
@@ -146,13 +153,20 @@ class UpperLimbService:
                 # Never skip many trajectory steps or expand the allowed step after a delay.
                 if dt > self.period * 1.5 or dt <= 0:
                     raise SafetyError("trajectory scheduling delay; request not completed")
-                elapsed = min(now - began, duration)
+                elapsed = now - began if duration is None else min(now - began, duration)
                 requested = path(elapsed)
-                self.controller.set_joint_positions(requested, dt=min(dt, self.period), require_exact=True)
+                applied = self.controller.set_joint_positions(
+                    requested, dt=min(dt, self.period), require_exact=duration is not None,
+                )
                 last = now
-                if elapsed >= duration - 1e-9:
-                    break
-                next_tick = min(next_tick + self.period, began + duration)
+                if duration is None:
+                    if all(applied[k] == v for k, v in targets.items()):
+                        break
+                    next_tick += self.period
+                else:
+                    if elapsed >= duration - 1e-9:
+                        break
+                    next_tick = min(next_tick + self.period, began + duration)
             deadline = self.clock.monotonic() + self.profile.arrival_timeout_s
             while True:
                 states = self.controller.read_joint_states()

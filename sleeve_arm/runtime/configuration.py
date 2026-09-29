@@ -16,10 +16,15 @@ from sleeve_arm.config import (
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Selectable dual-IMU or three-flex shoulder control; real motion requires --execute.")
-    parser.add_argument("--sleeve", choices=("fake", "real"), default="real")
+    parser.add_argument("--sleeve", choices=("auto", "fake", "real", "none"), default="auto",
+                        help="auto skips Sleeve for dual-IMU Aurora or --print-only; otherwise uses real Sleeve. "
+                             "Use real to include elbow angles; none requires dual_imu and Aurora or --print-only.")
     parser.add_argument("--imus", choices=("fake", "real"), default="real")
     parser.add_argument("--robot", choices=("fake", "dymotor", "aurora", "aurora-fake"), default="dymotor")
-    parser.add_argument("--execute", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--execute", action="store_true")
+    mode.add_argument("--print-only", action="store_true",
+                      help="continuously print sensor-estimated arm actions and angles; never connect to a robot")
     parser.add_argument("--aurora-profile", type=Path)
     parser.add_argument("--arm-side", "--side", dest="side", choices=("left", "right"))
     parser.add_argument("--source-side", choices=("left", "right"))
@@ -63,6 +68,8 @@ def parse_args(argv=None):
     parser.add_argument("--prepare-aurora-fsm", action="store_true",
                         help="explicitly prepare PdStand after interactive confirmation")
     args = parser.parse_args(argv)
+    if args.sleeve == "none" and not args.print_only and args.robot not in ("aurora", "aurora-fake"):
+        parser.error("--sleeve none requires --robot aurora/aurora-fake or --print-only")
     if args.duration is not None and (not math.isfinite(args.duration) or args.duration <= 0):
         parser.error("--duration must be positive")
     if args.calibration_seconds is not None and (not math.isfinite(args.calibration_seconds) or args.calibration_seconds <= 0):
@@ -71,13 +78,13 @@ def parse_args(argv=None):
     if is_aurora:
         if args.side != "right" or args.source_side != "right":
             parser.error("current shoulder predictors require explicit --source-side right --side right; cross-side mapping is unverified")
-        if args.robot == "aurora" and args.aurora_profile is None:
+        if args.robot == "aurora" and args.aurora_profile is None and not args.print_only:
             parser.error("Aurora requires --aurora-profile")
         if args.execute and args.duration is None:
             parser.error("Aurora execute requires a bounded --duration")
     if args.robot in ("dymotor", "aurora") and args.execute:
-        if args.sleeve != "real":
-            parser.error("real robot execution requires --sleeve real")
+        if args.sleeve == "fake":
+            parser.error("real robot execution cannot use --sleeve fake; use real sensor data")
         if args.imus != "real":
             parser.error("real robot execution requires --imus real")
 
@@ -95,11 +102,12 @@ class ModelControlConfigs:
     elbow: Phase3ElbowConfig | None = None
     shoulder_backend: str | None = None
     offline_preview: bool = False
+    sleeve_mode: str = "real"
 
 
 def load_configs(args):
     # Preserve offline Aurora preview: no sensor/model files or hardware required.
-    if args.robot == "aurora" and not args.execute:
+    if args.robot == "aurora" and not args.execute and not args.print_only:
         return ModelControlConfigs(offline_preview=True)
     phase3 = load_phase3_config(args.phase3_config)
     phase4 = load_phase4_config(args.phase4_config)
@@ -107,6 +115,12 @@ def load_configs(args):
     backend = args.shoulder_predictor or phase4.predictor_backend
     if backend not in ("dual_imu", "flexarm_estimator"):
         raise ValueError("run_model_control shoulder predictor must be dual_imu or flexarm_estimator")
+    sleeve_mode = args.sleeve
+    if sleeve_mode == "auto":
+        imu_only_supported = args.print_only or args.robot in ("aurora", "aurora-fake")
+        sleeve_mode = "none" if imu_only_supported and backend == "dual_imu" else "real"
+    if sleeve_mode == "none" and backend != "dual_imu":
+        raise ValueError("--sleeve none requires the dual_imu shoulder predictor; flexarm_estimator needs Sleeve data")
     if backend == "flexarm_estimator":
         if phase4.flex_model is None:
             raise ValueError("phase4 config does not define predictor.flexarm_estimator")
@@ -115,7 +129,7 @@ def load_configs(args):
     elif args.reuse_calibration or args.calibration_output is not None:
         raise ValueError("--reuse-calibration and --calibration-output require the flexarm_estimator shoulder predictor")
     elbow = phase3.elbow
-    if args.sleeve == "fake" and elbow.input_min is None:
+    if sleeve_mode == "fake" and elbow.input_min is None:
         elbow = replace(elbow, input_min=0.0, input_max=2.0, angle_min_deg=0.0, angle_max_deg=90.0)
-    robot = None if args.robot in ("aurora", "aurora-fake") else load_robot_config(args.robot_config)
-    return ModelControlConfigs(phase3, phase4, sensors, robot, elbow, backend)
+    robot = None if args.print_only or args.robot in ("aurora", "aurora-fake") else load_robot_config(args.robot_config)
+    return ModelControlConfigs(phase3, phase4, sensors, robot, elbow, backend, sleeve_mode=sleeve_mode)

@@ -9,29 +9,30 @@ sensors:
     timeout_s: 1.0
     delimiter: ";"
     expected_fields: 11
-
+  #胸
   imu1:
     enabled: true
     backend: imu770_serial
     port: /dev/ttyCH9344USB3
     baudrate: 460800
     timeout_s: 0.1
-
+  #小臂
   imu2:
     enabled: true
     backend: imu770_serial
-    port: /dev/ttyCH9344USB0
+    port: /dev/ttyCH9344USB2
     baudrate: 460800
     timeout_s: 0.1
 
   # Configure these two machine-specific ports before real rotation control.
+  #前大臂
   imu3:
     enabled: true
     backend: imu770_serial
     port: /dev/ttyCH9344USB5
     baudrate: 460800
     timeout_s: 0.1
-
+  #后大臂
   imu4:
     enabled: true
     backend: imu770_serial
@@ -41,8 +42,8 @@ sensors:
 
 # DualImuArmEstimator inputs. IMU1 is on the right upper arm; IMU2 is on the chest.
 shoulder_imu:
-  arm_imu: imu1
-  chest_imu: imu2
+  arm_imu: imu4
+  chest_imu: imu1
   max_sync_ms: null
   calibration_seconds: 2.0
   startup_timeout_s: 10.0
@@ -52,7 +53,7 @@ shoulder_imu:
 upper_arm_rotation:
   enabled: true
   upper_imu: imu3
-  reference_imu: imu4
+  reference_imu: imu2
   # Parser order is [w,x,y,z]; interpreted as Sensor->World per the reference demo.
   twist_axis: x
   ema_alpha: 0.35

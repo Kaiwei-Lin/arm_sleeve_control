@@ -77,8 +77,11 @@ class SensorRuntime:
     """
 
     def __init__(self, config, *, sleeve="real", imus="real", shoulder_backend="dual_imu"):
+        if sleeve == "none" and shoulder_backend != "dual_imu":
+            raise ValueError("IMU-only samples require the dual_imu shoulder predictor")
         self.config = config
         self.sleeve_mode = sleeve
+        self.sample_label = "IMU" if sleeve == "none" else "Sleeve"
         self.imu_mode = imus
         self.shoulder_backend = shoulder_backend
         self.source = None
@@ -112,7 +115,8 @@ class SensorRuntime:
         self.imu_error = None
 
     def start(self):
-        self.source = FakeSleeveSource() if self.sleeve_mode == "fake" else create_sleeve_source(self.config)
+        if self.sleeve_mode != "none":
+            self.source = FakeSleeveSource() if self.sleeve_mode == "fake" else create_sleeve_source(self.config)
         delayed = set()
         if self.shoulder_backend == "dual_imu":
             delayed.add(self.shoulder_names[1])
@@ -124,7 +128,8 @@ class SensorRuntime:
             if source is None:
                 raise RuntimeError(f"model control could not create configured {name} source")
             self.imu_sources[name] = source
-        self.source.start()
+        if self.source is not None:
+            self.source.start()
         for source in self.imu_sources.values():
             source.start()
 
@@ -139,6 +144,13 @@ class SensorRuntime:
             self.imu_error = exc
         if self.rotation_sync is not None:
             self.rotation_pair = self.rotation_sync.latest_imu_pair(self.max_sync_ms(self.config.upper_arm_rotation))
+        if self.sleeve_mode == "none":
+            pair = self.shoulder_sync.latest_imu_pair(self.max_sync_ms(self.config.shoulder_imu))
+            if pair is None:
+                return None
+            # Age the oldest frame, never polling time: a disconnected IMU must
+            # not look fresh just because the other IMU keeps producing data.
+            return SensorSample(min(frame.timestamp for frame in pair), None, *pair)
         frame = self.source.latest()
         if frame is None:
             return None
@@ -161,6 +173,8 @@ class SensorRuntime:
 
     @property
     def stats(self):
+        if self.sleeve_mode == "none":
+            return self.imu_sources[self.shoulder_names[0]].stats
         return self.source.stats
 
     def close(self):
@@ -178,5 +192,5 @@ class SensorRuntime:
 def create_sensor_runtime(args, configs):
     if configs.offline_preview:
         return None
-    return SensorRuntime(configs.sensors, sleeve=args.sleeve, imus=args.imus,
+    return SensorRuntime(configs.sensors, sleeve=configs.sleeve_mode, imus=args.imus,
                          shoulder_backend=configs.shoulder_backend)

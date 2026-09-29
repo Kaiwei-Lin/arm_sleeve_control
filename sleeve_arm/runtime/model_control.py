@@ -33,6 +33,7 @@ class ModelControlApp:
         self.telemetry = telemetry or Telemetry()
         self.clock = clock or time
         self.print = print_fn
+        self.sample_label = getattr(sensors, "sample_label", "Sleeve")
         self.state = RuntimeState.INIT
         self.fault = None
         self.invalid = self.consecutive_errors = self.stale = 0
@@ -111,7 +112,7 @@ class ModelControlApp:
             self.rotation_consecutive_errors = 0
         # No completed inference may submit a sample that crossed hard timeout.
         if self.watchdog.is_hard_timeout(sample.timestamp, self.clock.monotonic()):
-            raise RuntimeError("prediction completed after Sleeve hard timeout")
+            raise RuntimeError(f"prediction completed after {self.sample_label} hard timeout")
         self.consecutive_errors = 0
         return intent
 
@@ -132,12 +133,12 @@ class ModelControlApp:
             # Check the last known timestamp even when latest() returns None.
             age = self.watchdog.age(sample.timestamp, now)
             if self.watchdog.is_hard_timeout(sample.timestamp, now):
-                raise RuntimeError(f"Sleeve hard timeout: {age * 1000:.1f} ms")
+                raise RuntimeError(f"{self.sample_label} hard timeout: {age * 1000:.1f} ms")
             if self.watchdog.is_stale(sample.timestamp, now):
                 if self.robot.fail_fast:
-                    raise RuntimeError("sensor watchdog: stale/missing sleeve feedback; restart requires confirmation")
+                    raise RuntimeError(f"sensor watchdog: stale/missing {self.sample_label.lower()} feedback; restart requires confirmation")
                 if self.state is not RuntimeState.STALE:
-                    self.print(f"WARNING: Sleeve stale ({age * 1000:.1f} ms); holding last safe target")
+                    self.print(f"WARNING: {self.sample_label} stale ({age * 1000:.1f} ms); holding last safe target")
                 self.state = RuntimeState.STALE
                 self.stale += 1
             elif incoming is not None and sample.timestamp != last_timestamp:
@@ -150,6 +151,11 @@ class ModelControlApp:
                     intent = predicted
                     self.predictions += 1
                     self.state = RuntimeState.RUNNING
+            elif getattr(self.robot, "stream_between_samples", False) and self.predictions:
+                # Keep advancing toward the latest fresh intent at the control
+                # rate, even if sensor samples arrive more slowly. The watchdog
+                # above stops reuse as soon as the sample becomes stale.
+                targets = self.robot.apply(intent, period)
             if now - last_print >= 1.0:
                 self.telemetry.report(
                     sample=sample, intent=intent, targets=targets, feedback=self.robot.feedback(),

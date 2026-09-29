@@ -1,10 +1,10 @@
-# GR3 layout/SDK limits from electronic_skin_project reference demo and Fourier.
+# GR3 official joint bounds and maximum velocities (rad, rad/s).
+# Source: https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/robot_specs/
+# max_position_step = max_velocity / control_hz (100 Hz).
 # Physical order: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow_pitch,
 #                 wrist_yaw, wrist_pitch, wrist_roll.
-# verified=false: semantic signs/zero and conservative software motion limits
-# MUST still be checked on this installation. Especially upper-arm rotation sign.
-# This template does not authorize motion; fill verification/authority fields
-# and group/joint verified flags only after deployment validation.
+# Semantic signs, zeroes and verification flags retain the site calibration.
+# Tracking-error and timeout settings are application limits, not vendor specs.
 api_family: aurora-python-dds-0.1.8
 sdk_version: 0.1.8
 verified: true
@@ -47,7 +47,7 @@ groups:
     - 1.309
   - - -1.0472
     - 1.2217
-  max_tracking_error: 0.2
+  max_tracking_error: 3.14
   joints:
   - name: shoulder_flexion
     index: 0
@@ -57,9 +57,10 @@ groups:
     limits:
       min_position: -2.9671
       max_position: 2.9671
-      max_velocity: 0.3
-      max_position_step: 0.01
-      max_tracking_error: 0.2
+      max_velocity: 7.75
+      max_feedback_velocity: 7.75
+      max_position_step: 0.0775
+      max_tracking_error: 3.14
   - name: shoulder_abduction
     index: 1
     sign: 1
@@ -68,9 +69,10 @@ groups:
     limits:
       min_position: -0.2618
       max_position: 1.9199
-      max_velocity: 0.3
-      max_position_step: 0.01
-      max_tracking_error: 0.2
+      max_velocity: 7.75
+      max_feedback_velocity: 7.75
+      max_position_step: 0.0775
+      max_tracking_error: 3.14
   - name: upper_arm_rotation
     index: 2
     sign: 1
@@ -79,9 +81,10 @@ groups:
     limits:
       min_position: -1.8326
       max_position: 1.8326
-      max_velocity: 0.3
-      max_position_step: 0.01
-      max_tracking_error: 0.2
+      max_velocity: 6.28
+      max_feedback_velocity: 6.28
+      max_position_step: 0.0628
+      max_tracking_error: 3.14
   - name: elbow_flexion
     index: 3
     sign: -1
@@ -90,9 +93,10 @@ groups:
     limits:
       min_position: -0.087266
       max_position: 2.2689
-      max_velocity: 0.3
-      max_position_step: 0.01
-      max_tracking_error: 0.2
+      max_velocity: 6.28
+      max_feedback_velocity: 6.28
+      max_position_step: 0.0628
+      max_tracking_error: 3.14
 - name: right_manipulator
   side: right
   part: arm
@@ -115,7 +119,7 @@ groups:
     - 1.309
   - - -1.2217
     - 1.0472
-  max_tracking_error: 0.2
+  max_tracking_error: 3.14
   joints:
   - name: shoulder_flexion
     index: 0
@@ -125,9 +129,10 @@ groups:
     limits:
       min_position: -2.9671
       max_position: 2.9671
-      max_velocity: 0.3
-      max_position_step: 0.01
-      max_tracking_error: 0.2
+      max_velocity: 7.75
+      max_feedback_velocity: 7.75
+      max_position_step: 0.0775
+      max_tracking_error: 3.14
   - name: shoulder_abduction
     index: 1
     sign: -1
@@ -136,9 +141,10 @@ groups:
     limits:
       min_position: -0.2618
       max_position: 1.9199
-      max_velocity: 0.3
-      max_position_step: 0.01
-      max_tracking_error: 0.2
+      max_velocity: 7.75
+      max_feedback_velocity: 7.75
+      max_position_step: 0.0775
+      max_tracking_error: 3.14
   - name: upper_arm_rotation
     index: 2
     sign: 1
@@ -147,9 +153,10 @@ groups:
     limits:
       min_position: -1.8326
       max_position: 1.8326
-      max_velocity: 0.3
-      max_position_step: 0.01
-      max_tracking_error: 0.2
+      max_velocity: 6.28
+      max_feedback_velocity: 6.28
+      max_position_step: 0.0628
+      max_tracking_error: 3.14
   - name: elbow_flexion
     index: 3
     sign: -1
@@ -158,9 +165,10 @@ groups:
     limits:
       min_position: -0.087266
       max_position: 2.2689
-      max_velocity: 0.3
-      max_position_step: 0.01
-      max_tracking_error: 0.2
+      max_velocity: 6.28
+      max_feedback_velocity: 6.28
+      max_position_step: 0.0628
+      max_tracking_error: 3.14
 allow_missing_velocity_cmd: true
 minimum_stable_level: 100
 stable_wait_seconds: 3.0

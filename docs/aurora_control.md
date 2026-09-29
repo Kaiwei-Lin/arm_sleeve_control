@@ -16,7 +16,7 @@ streaming 控制层，不依赖袖套/IMU。运行方式与角度定义见
 
 | 路径 | API | 适用场景 / 状态 |
 | --- | --- | --- |
-| Streaming | `get_group_state` + `set_group_cmd` | 每个新 sensor sample 更新目标；当前站立遥操作使用 PdStand/FSM 2，`stable_level > 100` |
+| Streaming | `get_group_state` + `set_group_cmd` | 每个新 sensor sample 更新目标，在样本仍新鲜时按控制周期推进；当前站立遥操作使用 PdStand/FSM 2，`stable_level > 100` |
 | Discrete motion | `MoveCommandManager` + `set_move_command`，必要时 `wait_groups_motion_complete` | 固定姿态、离散动作；官方示例为全身 FSM 3 / 上身 FSM 4 |
 
 MoveCommand 提供自身轨迹规划、速度规划和完成跟踪。实时 IMU 循环每帧重启
@@ -108,7 +108,7 @@ namespace/ROS 命名可用原 doctor 的 `--namespace`、`--ros-compatible` / `-
 cp configs/robot_aurora.yaml configs/aurora.site.yaml
 ```
 
-`configs/robot_aurora.yaml` 现在是 GR3 参考模板：domain 123、robot_name gr3、原生 DDS、FSM 2、左右 manipulator 的 7DoF 布局和参考 SDK 限位。`verified`、组/关节验证和 authority 标记仍为 false，**不能直接 execute**；sign/zero 和保守的软件速度/步长/跟踪阈值必须在本机复核，特别是旋转方向。旧的全空模板仍保留为 `configs/aurora.unverified.yaml`，旧 schema 兼容。结构使用 `groups` 列表，每个条目明确 side/part；字段对应关系如下：
+`configs/robot_aurora.yaml` 是当前 GR3 正常运行配置：domain 123、robot_name gr3、原生 DDS、FSM 2、左右 manipulator 的 7DoF 布局、官方 SDK 位置和速度上限。现场已有的 `verified`、组/关节验证、authority、sign/zero 记录由现有配置保留，本次参数核对不代表新的真机标定。全空未验证模板为 `configs/aurora.unverified.yaml`，旧 schema 兼容。结构使用 `groups` 列表，每个条目明确 side/part；字段对应关系如下：
 
 | 字段 | 意义 / 必须确认的内容 |
 |---|---|
@@ -131,11 +131,53 @@ cp configs/robot_aurora.yaml configs/aurora.site.yaml
 | `groups[].capabilities`, `verified` | 已确认的 joint_position 等能力、该侧实际组的验证状态 |
 | `joints[].name`, `index` | GR3: shoulder_flexion=0、shoulder_abduction=1、upper_arm_rotation=2、elbow_flexion=3；未控制腕部 4/5/6 完整保留 |
 | `joints[].sign`, `zero` | 分别是 direction（±1）与 zero_position（SDK rad） |
-| `joints[].limits` | 语义 rad 的 min/max_position、max_position_step、max_tracking_error，以及 rad/s 的 max_velocity；缺失则拒绝 execute |
+| `joints[].limits` | 语义 rad 的 min/max_position、max_position_step、max_tracking_error，以及 rad/s 的指令限速 max_velocity；缺失则拒绝 execute |
+| `joints[].limits.max_feedback_velocity` | 独立的实测速度上限，单位 rad/s；GR3 手臂缺省取官方关节速度上限，其他型号缺省沿用 max_velocity；不能低于指令限速或超过 GR3 对应关节上限 |
 | `joints[].verified`, `kind` | 关节校准已验证；kind 为实际 arm/wrist/finger，不虚构 palm 关节 |
 | `simulated` | 合成测试 profile 标志；true 永远不能用于真实 execute |
 
-只要求本次选定侧/部位的硬件映射齐全，未选择的另一侧可继续保留未验证。每个已选择组都必须具备完整 SDK 槽位限位，即使此次只控制一个肩关节。未提供的电流、逐电机错误、bus/state 使用 None；如果要求相应安全策略，直接拒绝，不能填零绕过。velocity 缺失时 max_velocity 反馈策略也拒绝控制；effort 缺失保留 None。
+只要求本次选定侧/部位的硬件映射齐全，未选择的另一侧可继续保留未验证。每个已选择组都必须具备完整 SDK 槽位限位，即使此次只控制一个肩关节。未提供的电流、逐电机错误、bus/state 使用 None；如果要求相应安全策略，直接拒绝，不能填零绕过。velocity 缺失时反馈速度检查仍拒绝控制；effort 缺失保留 None。
+
+指令限速与实测速度阈值分开，避免将位置指令的 `max_velocity: 0.3` 直接当作
+电机实测速度的硬上限。GR3 两侧手臂默认反馈上限来自
+[官方 GR3 参数](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/robot_specs/)：
+肩 pitch/roll 7.75、肩 yaw/肘 pitch/腕 yaw 6.28、腕 pitch/roll 9.2153 rad/s。
+这些值只提供反馈超速检查上限；profile 的指令速度、步长、位置和跟踪误差限制仍分别生效。
+现场可用 `max_feedback_velocity` 配置更低的报警阈值。
+
+### 正常运行配置的官方限位核对
+
+`control.sh` 加载 `configs/robot_aurora.yaml`，两侧四个受控关节现在均按
+[官方 GR3 参数](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/robot_specs/)
+设置指令速度和反馈速度上限。`debug.sh` 加载的 `configs/aurora_196_shoulder.yaml`
+同样使用最大肩部速度。
+
+| 受控关节 | 原指令限速 rad/s | 现指令/反馈上限 rad/s | 100 Hz 下每步上限 rad |
+| --- | --- | --- | --- |
+| 肩前屈、肩外展 | 0.3 | 7.75 | 0.0775 |
+| 上臂旋转、肘屈曲 | 0.3 | 6.28 | 0.0628 |
+
+`max_position_step = max_velocity / control_hz` 是由官方速度和当前控制周期推导的
+应用步长，不是官网另行规定的参数。原通用配置的 0.01 rad/步在 100 Hz 下最多
+允许 1 rad/s，因此只提高 `max_velocity` 不足以达到上述指令速度。
+
+两侧完整 7DoF 的 SDK 位置限位已与官网逐项核对。通用配置原本已匹配；正常肩部
+专用配置已去除额外 0.03 rad 内缩，恢复官方位置范围，并按 sign/zero 转回语义限位。
+腕部三槽仍保留当前姿态，不新增未标定的腕部控制映射；腕部的官方反馈速度参考
+仍为 yaw 6.28、pitch/roll 9.2153 rad/s。
+
+`control.sh` 的控制频率显式来自 `configs/phase3.yaml`，当前为 100 Hz。
+新传感器帧才重新推理；两帧之间只要上一次样本仍新鲜，就继续按控制周期推进其目标。
+这样低于 100 Hz 的传感器刷新不会额外缩小指令限速。传感器过期、机器人反馈异常或
+跟踪误差超限仍结束会话。启动日志 `Aurora streaming limits` 显示每个关节实际生效的
+指令速度、反馈速度和步长。脚本中的 `--duration 3600` 是整个会话的一小时上限，
+不分摊单次运动时间。
+
+官网这些页面没有给出本应用的 `max_tracking_error`、`arrival_tolerance_rad`、
+反馈超时或调度抖动阈值，不能将它们称为厂家推荐值。正常配置中的原跟踪阈值与
+超时策略继续生效。`aurora_196_shoulder_slow_20deg.yaml` 和
+`aurora_196_shoulder_slew_test.yaml` 是专门的低速/跟踪试验配置，保留试验参数；
+`control.sh` 和 `debug.sh` 均不加载它们。
 
 0.1.8 没有 lease API，但这不等于已经获得控制权。官方 GR3 示例先手动切 FSM 并设置增益，**本项目不复制这些写操作**，也没有从示例证明现场的隐式 authority。现场必须独立确认 FSM、伺服/控制模式/增益、其他写入方和组控制权条件，再标记 authority_verified。一个应用 owner 不能防止其他进程或外部控制器抢写同组。
 

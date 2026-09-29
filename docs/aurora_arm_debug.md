@@ -2,7 +2,7 @@
 
 `tools/aurora_arm_debug.py` 用于检查 Aurora SDK 的连接、完整 group 命令下发和
 反馈到位。不需要袖套、IMU 或模型。默认只做离线预览；只有显式 `--execute`
-才连接真机，且每条动作都显示目标并要求准确输入 `YES`。
+才连接真机。启用后每条动作显示目标并直接执行，无需输入 `YES`。
 
 ## 三种运行方式
 
@@ -82,7 +82,7 @@ python tools/aurora_arm_debug.py --backend fake --simulate --reference current
 
 例如先选 `5` 输入 `30`，再选 `6` 输入 `10`，从初始 0° 最后到约 20°。
 在默认 neutral 模式下选 `6` 输入 `10` 要求到 -10°，可能超出 GR3 的肘部范围。
-增量目标根据展示预览时的新鲜反馈计算一次，确认等待期间不会悄悄改变目标。
+增量目标根据展示预览时的新鲜反馈计算一次，执行前重新读取反馈不会改变目标。
 
 默认只连接右臂。左臂使用 `--side left`，菜单会显示为左臂；同一次会话不切换侧别。
 
@@ -96,8 +96,38 @@ python tools/aurora_arm_debug.py --backend fake --simulate --action 1 --angle-de
 `--action 8` 仅查看状态，`--action 0` 结束；这两项不接受角度参数。
 不提供 `--action` 就进入交互菜单。
 
-默认按 profile 的速度/步长限制自动计算运动耗时；`--duration 5` 可指定 5 秒，
-耗时不足会拒绝。位置超限直接拒绝，预览中的限幅值仅用于诊断。
+每次动作都以当前 profile 允许的最大速度推进：每个控制周期的最大步幅为
+`min(max_velocity × 实际周期时间, max_position_step)`，实际周期时间最多按
+`1 / control_hz` 计算。到达目标即结束，不再设置固定运动耗时、至少 2 秒等待
+或额外 25% 时间余量，也不再接受 `--duration` 参数；旧命令中删除该参数即可。
+这会从首个周期开始按最大允许步幅发送，不再使用先加速后减速的三次插值。
+正常运行配置 `robot_aurora.yaml` 和 `aurora_196_shoulder.yaml` 已采用官方速度上限：
+肩前屈/外展 7.75 rad/s，上臂旋转/肘屈曲 6.28 rad/s。100 Hz 下的步长分别为
+0.0775 和 0.0628 rad，避免原来 0.01 rad 的步长再次压低速度。
+位置超限直接拒绝，预览中的限幅值仅用于诊断；仍检查反馈、跟踪误差和到位超时。
+
+`max_velocity` 限制指令位置的变化速度，实测反馈用独立的
+`max_feedback_velocity` 判断超速。GR3 手臂未填写该项时，按
+[官方关节参数](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/robot_specs/)
+使用对应关节上限：肩前屈/外展 7.75、上臂旋转/肘屈曲/腕 yaw 6.28、腕 pitch/roll
+9.2153 rad/s；也可在关节 `limits` 中设置更低的 `max_feedback_velocity`，但不能低于
+指令 `max_velocity`。例如 `max_velocity: 0.3`、`max_feedback_velocity: 0.6`
+分别表示指令最多 0.3 rad/s、实测超过 0.6 rad/s 报错。非 GR3 手臂未填写时沿用
+`max_velocity` 作为反馈上限。
+
+原来 `velocity exceeds max_velocity` 报错把指令限速也当作实测速度阈值；按限速运行时，
+反馈超过 0.3 rad/s 就会终止。现在会打印实测速度、反馈上限和指令限速，且启动时的
+`velocity_limits_rad_s` 会显示实际生效的两个值。反馈阈值不会提高指令发送速度。
+`DDSInterface closed` 是随后清理客户端的日志，不是这个超速错误的原因。
+
+官方 [MoveCommand 示例](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/examples/move_command_example/)
+的 `expect_vel` 是最大速度的千分比，并要求全身 FSM 3 / 上身 FSM 4。
+当前脚本继续使用 [PdStand 下的直接关节命令](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/examples/joint_command_example/)，
+不因这次反馈阈值修复自动切换控制模式。
+
+`debug.sh` 使用更新后的肩部配置；`control.sh` 使用更新后的双臂通用配置，
+其传感器控制循环也按 100 Hz 推进最新的新鲜目标。完整限位核对和仍属应用层的
+跟踪误差/超时参数见 [Aurora 配置说明](aurora_control.md#正常运行配置的官方限位核对)。
 
 ## 输出能证明什么
 
@@ -106,6 +136,7 @@ python tools/aurora_arm_debug.py --backend fake --simulate --action 1 --angle-de
 - `submitted`：SDK 调用返回，不能单独证明硬件收到命令。
 - `arrived`：控制层观察到提交后的新鲜位置反馈，误差在 profile 容差内。
 - `target_deg`、`feedback_deg`、`error_deg`：语义角度目标、实测值和误差。
+- `feedback_velocity_rad_s`：到位检查后的实测语义关节速度。
 - `delivery_confirmed: false`：0.1.8 没有消息送达回执，不能伪造成功确认。
 - `simulation: true`：仅为模拟结果，不能证明真机 SDK/网络/电机已工作。
 

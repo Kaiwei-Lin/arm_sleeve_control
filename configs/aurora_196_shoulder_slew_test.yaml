@@ -1,0 +1,58 @@
+api_family: aurora-python-dds-0.1.8
+sdk_version: 0.1.8
+verified: true
+simulated: false
+verification_note: User-confirmed GR3 path; aurora_reference_demo.py blob fc4236cb02decec31eb04f0de4b482359d4625dc;
+  docs/aurora_fsm.md
+robot_type: GR3
+authority_verified: true
+connection:
+  domain_id: 123
+  robot_name: gr3
+  namespace: null
+  is_ros_compatible: false
+allowed_fsm:
+- 2
+control_hz: 100
+feedback_timeout_s: 0.25
+endpoint_timeout_s: 5.0
+arrival_timeout_s: 3.0
+arrival_tolerance_rad: 0.005
+stop_policy: stop_publishing
+groups:
+- name: right_manipulator
+  side: right
+  part: arm
+  count: 7
+  verified: true
+  capabilities:
+  - joint_position
+  sdk_position_limits:
+  - - -2.9371
+    - 2.9371
+  - - -1.8899
+    - 0.2318
+  - - -1.8026
+    - 1.8026
+  - - -2.2389
+    - 0.057266
+  - - -1.8026
+    - 1.8026
+  - - -0.84266
+    - 1.279
+  - - -1.1917
+    - 1.0172
+  max_tracking_error: 0.01
+  joints:
+  - name: shoulder_flexion
+    index: 0
+    sign: -1
+    zero: 0.0
+    verified: true
+    limits:
+      min_position: -2.9371
+      max_position: 2.9371
+      max_velocity: 0.3
+      max_position_step: 0.03
+      max_tracking_error: 0.01
+allow_missing_velocity_cmd: true

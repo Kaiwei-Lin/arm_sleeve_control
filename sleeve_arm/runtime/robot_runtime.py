@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from sleeve_arm.control import ArmMapper, SafeArmController
 from sleeve_arm.control.mapper import AuroraIntentMapper
+from sleeve_arm.control.safety import clamp_position
 from sleeve_arm.domain import MotionIntent
 from sleeve_arm.robot import DyMotorArm
 from sleeve_arm.robot import factory
@@ -17,6 +18,7 @@ class RobotRuntime:
         self.print = print_fn
         self.backend = args.robot
         self.is_aurora = self.backend in ("aurora", "aurora-fake")
+        self.stream_between_samples = self.is_aurora
         # Preserve the existing fail-fast streaming policy as data for the app.
         self.fail_fast = self.is_aurora
         self.offline_preview = configs.offline_preview
@@ -51,6 +53,14 @@ class RobotRuntime:
         self.controller = SafeArmController(self.robot, self.robot.config, clock=self.clock)
         self.controller.connect()
         self.controller.read_joint_states()
+        if self.is_aurora:
+            limits = {
+                name: dict(command_rad_s=joint.max_velocity,
+                           feedback_rad_s=joint.max_feedback_velocity,
+                           step_rad=joint.max_position_step)
+                for name, joint in self.robot.config.joints.items()
+            }
+            self.print(f"Aurora streaming limits: {limits}; control_hz={self.configs.phase3.control_hz}")
         if isinstance(self.robot, DyMotorArm):
             self.print(f"loaded_so: {self.robot.loaded_library_path}")
 
@@ -81,10 +91,19 @@ class RobotRuntime:
     def apply(self, intent: MotionIntent, dt: float):
         if not self.motion_enabled:
             return self.preview(intent, dt)
-        return self.controller.set_joint_positions(self.mapper.map(intent), dt=dt)
+        return self.controller.set_joint_positions(self._map_targets(intent), dt=dt)
 
     def preview(self, intent: MotionIntent, dt: float):
-        return self.controller.preview_positions(self.mapper.map(intent), dt=dt)
+        return self.controller.preview_positions(self._map_targets(intent), dt=dt)
+
+    def _map_targets(self, intent: MotionIntent):
+        targets = self.mapper.map(intent)
+        if self.is_aurora:
+            # Sensor estimates may exceed robot travel. Saturate semantic angles
+            # before the controller's unchanged range, slew and tracking checks.
+            targets = {name: clamp_position(self.robot.config.joints[name], value)
+                       for name, value in targets.items()}
+        return targets
 
     def check_health(self):
         if self.is_aurora:
@@ -100,5 +119,44 @@ class RobotRuntime:
             self.robot.close()
 
 
+class PrintOnlyRuntime:
+    """Consume semantic intents without creating a robot, controller or session."""
+
+    offline_preview = False
+    fail_fast = False
+    stream_between_samples = False
+    motion_enabled = False
+
+    def __init__(self, *, print_fn=print):
+        self.print = print_fn
+        self.startup = {}
+
+    def connect(self):
+        self.print("PRINT ONLY: 仅显示传感器估计的手臂动作，不连接或控制机器人。")
+
+    def prepare(self):
+        return True
+
+    def apply(self, intent: MotionIntent, dt: float):
+        return {name: value for name, value in (
+            ("shoulder_flexion", intent.shoulder_flexion_rad),
+            ("shoulder_abduction", intent.shoulder_abduction_rad),
+            ("elbow_flexion", intent.elbow_flexion),
+            ("upper_arm_rotation", intent.upper_arm_rotation_rad),
+        ) if value is not None}
+
+    def check_health(self):
+        pass
+
+    def feedback(self):
+        # Estimates are never presented as measured robot feedback.
+        return {}
+
+    def shutdown(self):
+        pass
+
+
 def create_robot_runtime(args, configs):
+    if args.print_only:
+        return PrintOnlyRuntime()
     return RobotRuntime(args, configs)

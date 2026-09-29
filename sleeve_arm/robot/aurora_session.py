@@ -221,7 +221,7 @@ class AuroraSession:
                 # Position is copied once for ALL semantic joints in this group.
                 position = tuple(raw)
                 group = next(g for g in self.profile.groups if g.name == name)
-                group.check_vector(position)
+                group.check_vector(position, source="feedback")
                 velocity = tuple(self._call('get_group_state', name, key='velocity'))
                 effort = tuple(self._call('get_group_state', name, key='effort'))
                 for label, values in (('velocity', velocity), ('effort', effort)):
@@ -336,7 +336,7 @@ class AuroraSession:
                 raise RobotError('command contains an unowned group')
             self.check_snapshot(snapshot)
             for name, vector in vectors.items():
-                next(g for g in self.profile.groups if g.name == name).check_vector(vector)
+                next(g for g in self.profile.groups if g.name == name).check_vector(vector, source="command")
             self._check_fsm()  # Immediately before every command; never changes FSM.
             result = self._call('set_group_cmd', position_cmd={k: list(v) for k, v in vectors.items()})
             if result is not None:

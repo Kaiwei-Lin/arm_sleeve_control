@@ -237,7 +237,9 @@ class IntentPipeline:
                 calibration_output=self.calibration_output, input_fn=input_fn, print_fn=self.print,
             )
         self.print(f"shoulder_predictor={self.backend}")
-        self.elbow = RuleBasedPredictor(self.configs.elbow)
+        self.elbow = None if sensors.sleeve_mode == "none" else RuleBasedPredictor(self.configs.elbow)
+        if self.elbow is None:
+            self.print("IMU ONLY: 未启用袖套，肘屈曲角度显示为未提供。")
         rotation = config.upper_arm_rotation
         if rotation.enabled:
             self.rotation = UpperArmRotationEstimator(
@@ -258,8 +260,8 @@ class IntentPipeline:
         if self.sensors.imu_error is not None:
             raise self.sensors.imu_error
         shoulder = self.shoulder.predict(sample)
-        elbow = self.elbow.predict(sample)
-        intent = replace(shoulder, elbow_flexion=elbow.elbow_flexion)
+        elbow = None if self.elbow is None else self.elbow.predict(sample).elbow_flexion
+        intent = replace(shoulder, elbow_flexion=elbow)
         if self.rotation is not None:
             try:
                 self.last_rotation_frames = _require_fresh_pair(

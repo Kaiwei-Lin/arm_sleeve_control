@@ -82,11 +82,20 @@ def validate_feedback(
         raise FeedbackError(f"{state.name}: feedback is below min_position")
     if config.max_position is not None and state.position > config.max_position:
         raise FeedbackError(f"{state.name}: feedback is above max_position")
-    if config.max_velocity is not None:
+    feedback_limit = getattr(config, "max_feedback_velocity", None)
+    limit_name = "max_feedback_velocity"
+    if feedback_limit is None:
+        feedback_limit = config.max_velocity
+        limit_name = "max_velocity"
+    if feedback_limit is not None:
         if state.velocity is None:
             raise FeedbackError(f"{state.name}: velocity feedback is unavailable")
-        if abs(state.velocity) > config.max_velocity:
-            raise FeedbackError(f"{state.name}: velocity exceeds max_velocity")
+        if abs(state.velocity) > feedback_limit:
+            raise FeedbackError(
+                f"{state.name}: feedback velocity exceeds {limit_name}; "
+                f"measured_rad_s={state.velocity:.9g}; limit_rad_s={feedback_limit:.9g}; "
+                f"command_max_velocity_rad_s={config.max_velocity}"
+            )
     if config.max_current is not None:
         if state.current is None:
             raise FeedbackError(f"{state.name}: current feedback is unavailable")

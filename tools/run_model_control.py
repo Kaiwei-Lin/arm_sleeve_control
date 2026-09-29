@@ -32,7 +32,7 @@ def main(argv=None) -> int:
         phase3=configs.phase3,
         phase4=configs.phase4,
         duration=args.duration,
-        telemetry=Telemetry(imu_debug=args.imu_debug),
+        telemetry=Telemetry(imu_debug=args.imu_debug, print_only=args.print_only),
     )
     return app.run()
 

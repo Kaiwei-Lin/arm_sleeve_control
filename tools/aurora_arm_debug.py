@@ -73,18 +73,6 @@ def read_angle(input_fn):
             print(f"输入错误：{exc}")
 
 
-def motion_duration(profile, joint, start, target, requested=None):
-    """Budget time for the existing cubic trajectory; never change its limits."""
-    distance = abs(target - start)
-    limits = joint.limits
-    speed = min(limits.max_velocity, limits.max_position_step / profile.control_period_s)
-    minimum = 1.5 * distance / speed
-    duration = max(2., minimum * 1.25) if requested is None else requested
-    if not profile.control_period_s <= duration <= 3600 or duration < minimum:
-        raise ValueError(f"运动耗时不足或超出范围；本次至少需要 {max(profile.control_period_s, minimum):.3f}s。")
-    return duration
-
-
 def snapshot(robot, group):
     # Disabled while awaiting user input: re-establish freshness after any pause.
     state = robot.session.fresh_snapshot({group.name})
@@ -100,10 +88,14 @@ def show_status(profile, group, robot):
         "simulation": profile.simulated, "fsm": fsm, "group": group.name,
         "sdk_position_rad": vector,
         "semantic_deg": {j.name: math.degrees(j.from_sdk(vector[j.index])) for j in group.joints},
+        "velocity_limits_rad_s": {
+            name: {"command": limits.max_velocity, "feedback": limits.max_feedback_velocity}
+            for name, limits in robot.config.joints.items()
+        },
     }, ensure_ascii=False, indent=2))
 
 
-def run_command(args, profile, group, command, controller, input_fn):
+def run_command(args, profile, group, command, controller):
     robot = None if controller is None else controller.robot
     before, fsm = (None, None) if robot is None else snapshot(robot, group)
     preview = preview_joint(profile, side=command.side, joint=command.joint,
@@ -116,39 +108,27 @@ def run_command(args, profile, group, command, controller, input_fn):
         print("拒绝执行：" + "; ".join(preview["blocking_reasons"]))
         return False
 
-    joint = next(j for j in group.joints if j.name == command.joint)
     target = preview["requested_semantic_position"]  # Never send the diagnostic clamp.
-    try:
-        duration = motion_duration(profile, joint, preview["current_semantic_position"], target, args.duration)
-    except ValueError as exc:
-        print(f"拒绝执行：{exc}")
-        return False
-    print(f"解析：{command.side} / {command.joint} → {math.degrees(target):.3f}°，预计 {duration:.3f}s")
-    if args.execute and input_fn("输入 YES 执行本次动作，其他输入取消：") != "YES":
-        print("已取消：未下发动作。")
-        return True
+    print(f"执行目标：{command.side} / {command.joint} → {math.degrees(target):.3f}°，按 profile 允许的最大速度运行")
 
-    # Explicitly check PdStand/stance. This tool never changes either FSM.
+    # --execute authorizes motion; still check PdStand/stance without changing FSM.
     robot.prepare_control_mode(operator_confirmed=True)
-    states = controller.read_joint_states()
     key = robot.joint_key(command.side, command.joint)
-    # Confirmation may take time. Keep the exact reviewed target; only recompute
-    # trajectory duration from fresh feedback, never rebase a relative command.
-    duration = motion_duration(profile, joint, states[key].position, target, args.duration)
-    print(f"执行目标：{math.degrees(target):.3f}°，耗时 {duration:.3f}s")
     controller.enable()
     try:
-        # Application-interpolated set_group_cmd, as in the verified SDK path.
-        # No MoveCommand planning or waits are added to the sensor control loop.
+        # Keep the preview's absolute target, including for relative commands.
+        # The controller advances at its velocity/step limits until submitted.
         result = AuroraMotionService(controller).move_joints(
-            {key: target}, duration_s=duration, reference="neutral",
+            {key: target}, reference="neutral",
         )
-        measured = controller.read_joint_states()[key].position
+        measured_state = controller.read_joint_states()[key]
+        measured = measured_state.position
         print(json.dumps({
             "simulation": profile.simulated, "submitted": result.submitted,
             "arrived": result.arrived, "delivery_confirmed": result.delivery_confirmed,
             "target_deg": math.degrees(target), "feedback_deg": math.degrees(measured),
             "error_deg": math.degrees(measured - target), "elapsed_s": result.elapsed_s,
+            "feedback_velocity_rad_s": measured_state.velocity,
         }, ensure_ascii=False, indent=2))
         print("模拟反馈到位。" if args.simulate else "已观察到提交后的新鲜关节反馈到位；SDK 不提供送达回执。")
         return True
@@ -164,20 +144,17 @@ def main(argv=None, *, input_fn=None):
     parser.add_argument("--side", choices=("right", "left"), default="right")
     parser.add_argument("--reference", choices=("neutral", "current"), default="neutral",
                         help="neutral: 目标角度相对标定零位；current: 相对当前姿态的增量")
-    parser.add_argument("--duration", type=float, help="单次运动秒数；默认根据 profile 限速自动计算")
     parser.add_argument("--action", choices=(*MENU_ACTIONS, "8", "0"),
                         help="只运行一个菜单项；1～6 需同时提供 --angle-deg")
     parser.add_argument("--angle-deg", type=float, help="单次动作的角度；交互模式会提示输入")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--execute", action="store_true", help="连接真机；每次动作仍需输入 YES")
+    mode.add_argument("--execute", action="store_true", help="连接真机并直接执行动作，无需输入 YES")
     mode.add_argument("--simulate", action="store_true", help="仅用于 --backend fake")
     args = parser.parse_args(argv)
     if args.execute and args.backend != "aurora":
         parser.error("fake 使用 --simulate，不接受 --execute")
     if args.simulate and args.backend != "fake":
         parser.error("--simulate 要求 --backend fake")
-    if args.duration is not None and (not math.isfinite(args.duration) or not 0 < args.duration <= 3600):
-        parser.error("--duration 必须在 (0, 3600] 秒范围内")
     if args.action in MENU_ACTIONS and args.angle_deg is None:
         parser.error("--action 1～6 必须同时提供 --angle-deg")
     if args.angle_deg is not None:
@@ -225,7 +202,7 @@ def main(argv=None, *, input_fn=None):
                 if angle is None:
                     continue
                 command = make_command(args.side, action, angle)
-                success = run_command(args, profile, group, command, controller, read)
+                success = run_command(args, profile, group, command, controller)
                 if args.action is not None and not success:
                     code = 1
             else:

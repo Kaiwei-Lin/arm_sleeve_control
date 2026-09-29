@@ -101,6 +101,60 @@ def test_new_samples_only_and_duration_stop_preserve_startup_order():
     assert app.state is RuntimeState.STOPPING and app.fault is None
 
 
+@pytest.mark.parametrize("between_samples", ["cached", "missing"])
+def test_aurora_streams_fresh_target_at_control_rate_without_repeating_inference(monkeypatch, between_samples):
+    app, _ = make_app(duration=.105)
+    app.robot.stream_between_samples = True
+    app.robot.fail_fast = True
+    original = app.sensors.latest
+    cached = None
+
+    def latest():
+        nonlocal cached
+        if cached is None or app.clock.monotonic() - cached.timestamp >= .03 - 1e-9:
+            cached = original()
+            return cached
+        return cached if between_samples == "cached" else None
+
+    monkeypatch.setattr(app.sensors, "latest", latest)
+    assert app.run() == 0
+    assert app.predictions == 3
+    assert len(app.intents.samples) == len(set(app.intents.samples)) == 4
+    assert len(app.robot.commands) == 8
+    assert all(dt == .01 for _, dt in app.robot.commands)
+
+
+def test_aurora_stops_repeating_target_when_sensor_becomes_stale(monkeypatch):
+    app, _ = make_app(duration=1.)
+    app.robot.stream_between_samples = True
+    app.robot.fail_fast = True
+    original = app.sensors.latest
+    first = original()
+    final_sample = None
+    submitted_at = []
+    apply = app.robot.apply
+
+    def latest():
+        nonlocal final_sample
+        if app.clock.monotonic() == first.timestamp:
+            return first
+        if final_sample is None:
+            final_sample = original()
+        return final_sample
+
+    def record(intent, dt):
+        submitted_at.append(app.clock.monotonic())
+        return apply(intent, dt)
+
+    monkeypatch.setattr(app.sensors, "latest", latest)
+    monkeypatch.setattr(app.robot, "apply", record)
+    assert app.run() == 1
+    assert "sensor watchdog" in app.fault
+    assert app.predictions == 1 and len(submitted_at) > 1
+    assert all(now - final_sample.timestamp <= app.phase3.sensor_timeout_ms / 1000.
+               for now in submitted_at)
+
+
 @pytest.mark.parametrize("missing", [False, True])
 @pytest.mark.parametrize("fail_fast", [False, True])
 def test_stale_hold_then_hard_fault_even_when_source_returns_none(monkeypatch, missing, fail_fast):
@@ -253,3 +307,31 @@ def test_telemetry_observes_without_driving_predictions():
     report = app.telemetry.reports[0]
     assert report["stats"]["predictions"] > 0
     assert report["targets"] == {"shoulder_flexion": .1}
+
+
+@pytest.mark.parametrize("backend", ["dymotor", "aurora"])
+def test_print_only_entry_runs_live_predictions_without_robot(monkeypatch, capsys, backend):
+    from sleeve_arm.robot import factory
+    from tools import run_model_control
+
+    clock = FakeClock()
+    events = []
+    sensors = FakeSensorRuntime(clock, events)
+    intents = FakeIntentPipeline(events)
+    monkeypatch.setattr(run_model_control, "create_sensor_runtime", lambda *_: sensors)
+    monkeypatch.setattr(run_model_control, "create_intent_pipeline", lambda *_: intents)
+    monkeypatch.setattr(run_model_control, "ModelControlApp", lambda **kw: ModelControlApp(clock=clock, **kw))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("print-only attempted to create robot hardware")
+
+    monkeypatch.setattr(factory, "create_robot", forbidden)
+    assert run_model_control.main([
+        "--print-only", "--robot", backend, "--side", "right", "--source-side", "right",
+        "--duration", "2.05", "--sleeve", "fake", "--imus", "fake",
+    ]) == 0
+    output = capsys.readouterr().out
+    assert output.count("[PRINT ONLY]") == 2
+    assert "肩前屈/后伸=+5.7°" in output and "上臂旋转=未提供" in output
+    assert "positions_rad=" not in output and "tracking_rad=" not in output
+    assert len(intents.samples) > 100 and events == ["sensor_start", "intent_prepare", "sensor_close"]
