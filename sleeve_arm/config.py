@@ -110,7 +110,6 @@ class GloveConfig:
     port: str | None = None
     baudrate: int = 115200
     timeout_s: float = 0.02
-    project_path: Path = PROJECT_ROOT.parent / "electronic_skin_project_v9_11"
     calibration_path: Path | None = None
     source_options: dict[str, Any] = field(default_factory=dict)
     stale_timeout_s: float = 0.25
@@ -405,10 +404,9 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
     if not isinstance(glove_raw, dict):
         raise ValueError("sensors.glove must be a mapping")
     glove_raw = dict(glove_raw)
-    for name in ("project_path", "calibration_path"):
-        if glove_raw.get(name) is not None:
-            value = Path(glove_raw[name]).expanduser()
-            glove_raw[name] = (config_path.parent / value).resolve()
+    if glove_raw.get("calibration_path") is not None:
+        value = Path(glove_raw["calibration_path"]).expanduser()
+        glove_raw["calibration_path"] = (config_path.parent / value).resolve()
     for name in ("open_pose_rad", "closed_pose_rad"):
         if name in glove_raw:
             glove_raw[name] = tuple(float(value) for value in glove_raw[name])

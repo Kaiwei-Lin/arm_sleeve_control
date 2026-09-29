@@ -1,30 +1,20 @@
-"""Reuse Bend5 acquisition/calibration; map named fingers to Aurora radians."""
+"""Own local Bend5 acquisition/calibration and map named fingers to Aurora radians."""
 from __future__ import annotations
 
 import math
-import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
 
 from sleeve_arm.config import GloveConfig
+from sleeve_arm.sources.glove import Bend5GloveSource
 
 
-# electronic_skin_project_v9_11/docs/reference/aurora_reference_demo.py.
+# GR3 Aurora hand group order and SDK bounds.
 # Aurora's order differs from the direct FDH6 Ethernet SDK mapper.
 HAND_JOINTS = ("thumb_bend", "index_flexion", "middle_flexion",
                "ring_flexion", "pinky_flexion", "thumb_swing")
 HAND_FINGERS = ("thumb", "index", "middle", "ring", "pinky", "thumb")
 HAND_LIMITS = ((0.12, 1.28), (0.17, 1.78), (0.17, 1.78),
                (0.17, 1.78), (0.17, 1.78), (0.0, 1.68))
-
-
-@dataclass(frozen=True)
-class GloveReading:
-    timestamp: float  # monotonic packet receipt, never polling time
-    raw: tuple[float, ...]
-    curls: dict[str, float]
-    status: str
 
 
 class GloveRuntime:
@@ -40,37 +30,8 @@ class GloveRuntime:
         self.config, self.mode = config, mode
         self.clock = clock or time
         self.source = None
-        self.reading = None
 
     def start(self):
-        # The dependency is optional: arm-only runs do not import electronic_skin.
-        root = self.config.project_path.resolve()
-        if not (root / "electronic_skin/sources/gloves/bend5.py").is_file():
-            raise ValueError(f"Bend5 implementation not found at {root}; set sensors.glove.project_path")
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        import electronic_skin
-        if root not in Path(electronic_skin.__file__).resolve().parents:
-            raise ValueError("another electronic_skin package is already imported; check glove.project_path")
-        import numpy as np
-        from electronic_skin.sources.gloves.bend5 import Bend5SerialHandInterface
-
-        runtime = self
-
-        class TimedBend5(Bend5SerialHandInterface):
-            def _store_packet(self, packet):
-                received_at = runtime.clock.monotonic()
-                if not np.isfinite(packet).all():
-                    raise ValueError("Bend5 packet contains non-finite values")
-                super()._store_packet(packet)
-                frame = self.read_frame()
-                # Publish one complete reading atomically after calibration.
-                runtime.reading = GloveReading(
-                    received_at, tuple(float(v) for v in packet),
-                    {name: value.value for name, value in frame.upper_limb.hand.joints.items()},
-                    frame.meta["status"],
-                )
-
         options = dict(self.config.source_options)
         calibration = self.config.calibration_path
         if self.mode == "fake":
@@ -79,18 +40,20 @@ class GloveRuntime:
                            per_finger_max_delta=1.0, deadzone_value=0.0)
         elif calibration is not None and not calibration.is_file():
             raise ValueError(f"glove calibration file not found: {calibration}")
-        self.source = TimedBend5(
+        self.source = Bend5GloveSource(
             port=self.config.port or "FAKE", baudrate=self.config.baudrate,
             timeout=self.config.timeout_s,
-            calibration_path=None if calibration is None else str(calibration), **options,
+            calibration_path=calibration, clock=self.clock, **options,
         )
         if calibration is not None and not self.source.calibration_loaded:
             raise ValueError(f"invalid glove calibration file: {calibration}")
         self.started_at = self.clock.monotonic()
-        self.reading = None
         if self.mode == "real":
-            self.source.open()
             self.source.start()
+
+    @property
+    def reading(self):
+        return None if self.source is None else self.source.latest()
 
     def latest(self):
         if self.source is None:
@@ -98,7 +61,8 @@ class GloveRuntime:
         if self.mode == "fake":
             import numpy as np
             amount = (1.0 - math.cos(self.clock.monotonic() - self.started_at)) / 2.0
-            self.source._store_packet(np.asarray([amount] * 5 + [0.0] * 6, dtype=np.float32))
+            self.source._store_packet(np.asarray(
+                [amount] * 5 + [0.0] * (self.source.expected_fields - 5), dtype=np.float32))
         return self.reading
 
     def wait_ready(self):

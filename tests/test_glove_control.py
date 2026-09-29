@@ -1,5 +1,10 @@
 """Bend5 wire data through the real calibration code into a fake Aurora session."""
 import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import threading
 
 import numpy as np
 import pytest
@@ -12,6 +17,7 @@ from sleeve_arm.robot.aurora_fake import FakeClock, fake_session, gr3_fake_profi
 from sleeve_arm.runtime.configuration import load_configs, parse_args
 from sleeve_arm.runtime.glove_control import GloveRuntime, HAND_JOINTS
 from sleeve_arm.runtime.robot_runtime import RobotRuntime
+from sleeve_arm.sources.glove import Bend5GloveSource
 
 
 def make_glove(clock=None):
@@ -58,7 +64,8 @@ def test_calibration_json_and_semicolon_tokens_are_reused(tmp_path):
         "direction": [1.] * 5, "deadzone": [0.] * 5,
     }))
     try:
-        glove.source = type(glove.source)(port="FAKE", calibration_path=str(calibration), filter_alpha=1.)
+        glove.source = Bend5GloveSource(port="FAKE", calibration_path=calibration,
+                                        filter_alpha=1., clock=glove.clock)
         for value in [100., 100., 100., 200., 100., 6., 7., 8., 9., 10.]:
             glove.source._parse_record(str(value))
         assert glove.latest() is None  # ten records do not form an eleven-value packet
@@ -73,8 +80,8 @@ def test_calibration_json_and_semicolon_tokens_are_reused(tmp_path):
 def test_startup_zeroing_does_not_expose_uncalibrated_targets():
     glove = make_glove()
     try:
-        glove.source = type(glove.source)(port="FAKE", zero_frames=2, filter_alpha=1.,
-                                          per_finger_max_delta=100., deadzone_value=0.)
+        glove.source = Bend5GloveSource(port="FAKE", zero_frames=2, filter_alpha=1.,
+                                        per_finger_max_delta=100., deadzone_value=0., clock=glove.clock)
         glove.source._parse_record(",".join(["100"] * 11))
         with pytest.raises(RuntimeError, match="not ready"):
             glove.targets()
@@ -145,11 +152,11 @@ def test_app_stops_both_outputs_and_closes_glove_on_dropout(monkeypatch):
 
 def test_glove_config_paths_legacy_defaults_and_cli_guards(tmp_path):
     raw = yaml.safe_load(DEFAULT_SENSOR_CONFIG_PATH.read_text(encoding="utf-8"))
-    raw["sensors"]["glove"].update(enabled=True, project_path="../skin", calibration_path="cal.json")
+    raw["sensors"]["glove"].update(enabled=True, calibration_path="cal.json")
     path = tmp_path / "sensors.yaml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     config = load_sensor_config(path).glove
-    assert config.project_path == (tmp_path.parent / "skin").resolve()
+    assert not hasattr(config, "project_path")
     assert config.calibration_path == tmp_path / "cal.json"
     with pytest.raises(ValueError, match="requires --robot"):
         load_configs(parse_args(["--sensor-config", str(path)]))
@@ -170,3 +177,103 @@ def test_debug_preview_never_constructs_robot_and_execute_rejects_fake(monkeypat
     assert "target_rad=" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         debug_glove.parse_args(["--execute", "--glove", "fake", "--duration", "1"])
+
+
+def test_local_matrix_calibration_reorders_channels_and_removes_crosstalk(tmp_path):
+    matrix = np.eye(5) * 100.
+    matrix[1, 0] = 20.  # pinky bending also changes the ring sensor
+    path = tmp_path / "matrix.json"
+    fingers = ("pinky", "ring", "middle", "index", "thumb")
+    path.write_text(json.dumps({
+        "finger_order": list(reversed(fingers)), "calibration_mode": "matrix",
+        "open_raw": [50.] * 5, "max_delta": [100.] * 5, "deadzone": [0.] * 5,
+        "single_action_delta_matrix": {name: matrix[:, i][::-1].tolist() for i, name in enumerate(fingers)},
+    }), encoding="utf-8")
+    source = Bend5GloveSource("FAKE", calibration_path=path, filter_alpha=1.)
+    source._store_packet([150, 70, 50, 50, 50, 0, 0, 0, 0, 0, 0])
+    assert source.calibration_mode_active == "matrix"
+    assert source.latest().curls == pytest.approx(dict(zip(fingers, [1., 0., 0., 0., 0.])))
+    source.filter_alpha = .5
+    source._store_packet([50, 50, 50, 50, 50, 0, 0, 0, 0, 0, 0])
+    assert source.latest().curls["pinky"] == pytest.approx(.5)
+
+
+@pytest.mark.parametrize("delimiter", [b",", b";"])
+def test_local_serial_reader_handles_split_packets_and_closes(delimiter):
+    chunks = [b"0", b"1" + delimiter + delimiter.join([b"0"] * 10) + b";\r\n"]
+    release = threading.Event()
+    received = threading.Event()
+
+    class Serial:
+        in_waiting = 8192
+        closed = False
+
+        def read(self, size):
+            if chunks:
+                return chunks.pop(0)
+            received.set()  # _feed_bytes has processed the previous chunk
+            release.wait(1.)
+            return b""
+
+        def close(self):
+            self.closed = True
+            release.set()
+
+    port = Serial()
+    clock = FakeClock()
+    source = Bend5GloveSource("FAKE", zero_on_start=False, filter_alpha=1., clock=clock,
+                              serial_factory=lambda **kwargs: port)
+    try:
+        source.start()
+        assert received.wait(2.)
+        reading = source.latest()
+        assert reading.timestamp == clock.monotonic()
+        assert reading.raw == (1.,) + (0.,) * 10
+        assert reading.curls["pinky"] == 1.
+    finally:
+        thread = source._thread
+        source.close()
+        source.close()
+    assert port.closed and not thread.is_alive()
+
+
+@pytest.mark.parametrize("record", ["0,0,nan,0,0,0,0,0,0,0,0", "0,0,inf,0,0,0,0,0,0,0,0", "garbage"])
+def test_invalid_record_does_not_replace_last_good_reading(record):
+    source = Bend5GloveSource("FAKE", zero_on_start=False)
+    source._feed_bytes(b"0,0,0,0,0,0,0,0,0,0,0;")
+    previous = source.latest()
+    with pytest.raises(ValueError):
+        source._parse_record(record)
+    assert source.latest() is previous
+
+
+def test_glove_and_combined_entry_run_from_an_isolated_project_copy(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    isolated = tmp_path / "standalone"
+    for directory in ("sleeve_arm", "tools", "configs"):
+        shutil.copytree(root / directory, isolated / directory,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.before-*"))
+    # -I removes PYTHONPATH/user-site/current-directory imports. Reject any
+    # attempt to import the other application or a real Aurora SDK explicitly.
+    bootstrap = """
+import importlib.abc, runpy, sys
+class NoExternalApplication(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in ('electronic_skin', 'fourier_aurora_client'):
+            raise AssertionError('unexpected dependency: ' + fullname)
+sys.meta_path.insert(0, NoExternalApplication())
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+    for script, options in (
+        ("debug_glove.py", ["--glove", "fake", "--robot", "aurora-fake"]),
+        ("run_model_control.py", ["--robot", "aurora-fake", "--side", "right", "--source-side", "right",
+                                  "--imus", "fake", "--glove", "fake", "--calibration-seconds", ".1"]),
+    ):
+        result = subprocess.run(
+            [sys.executable, "-I", "-X", "utf8", "-c", bootstrap,
+             str(isolated / "tools" / script), *options, "--duration", ".05"],
+            cwd=isolated, input="\n\n\n\n", capture_output=True, text=True, encoding="utf-8", timeout=20,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Bend5" in result.stdout

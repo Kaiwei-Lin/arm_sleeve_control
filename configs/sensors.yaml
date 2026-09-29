@@ -8,9 +8,8 @@ sensors:
     port: null  # e.g. /dev/ttyUSB0 or COM5; must differ from Sleeve/IMU ports.
     baudrate: 115200
     timeout_s: 0.02
-    # Relative paths are resolved from this YAML's directory.
-    project_path: ../../electronic_skin_project_v9_11
-    calibration_path: null  # existing Bend5 calibration JSON, if available
+    # Optional local Bend5 calibration JSON, relative to this YAML's directory.
+    calibration_path: null
     stale_timeout_s: 0.25
     startup_timeout_s: 10.0
     source_options:

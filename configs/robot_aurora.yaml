@@ -169,7 +169,7 @@ groups:
       max_feedback_velocity: 6.28
       max_position_step: 0.0628
       max_tracking_error: 3.14
-# Hand order/bounds: electronic_skin_project_v9_11/docs/reference/aurora_reference_demo.py.
+# GR3 Aurora hand order: thumb bend, index, middle, ring, pinky, thumb swing.
 # These are direct SDK radians; speed/step/tracking limits are application limits.
 - &aurora_hand
   name: left_hand

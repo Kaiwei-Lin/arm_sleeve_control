@@ -9,19 +9,21 @@
 `enabled: true` 会让主程序自动启用手套；也可以保持默认关闭，启动时显式传入
 `--glove real`。`--glove none` 始终只运行原有手臂流程。
 
-手套解析、启动调零、JSON 校准和滤波直接复用相邻
-`electronic_skin_project_v9_11` 的 `Bend5SerialHandInterface`。
-部署时需要保留该项目，或修改 `glove.project_path`；不需要启动其 GUI、Bridge，
-也不需要安装其 GUI 或其他厂家的 SDK。项目路径和 `calibration_path` 相对
-`sensors.yaml` 所在目录解析。手套关闭时不会导入该项目。
+手套解析、启动调零、逐指/矩阵 JSON 校准和滤波均由本项目的
+`sleeve_arm/sources/glove.py` 实现。独立部署只需本项目及 `requirements.txt`
+中的依赖，不需要相邻项目、GUI 或 Bridge。`calibration_path` 相对
+`sensors.yaml` 所在目录解析；已有校准 JSON 可以复制到本项目的 `calibrations/`
+目录，例如配置为 `../calibrations/bend5.json`。
 
 有现成 Bend5 校准 JSON 时设置 `calibration_path`，并保留
 `source_options.per_finger_max_delta: null`，以使用文件里的逐指范围。
 没有校准文件时，启动后先保持五指伸直，采集 30 帧作为零点；
 `per_finger_max_delta` 默认 1000，可改成单个数或按
 `[小指, 无名指, 中指, 食指, 拇指]` 排列的五个值。
-`source_options` 透传原实现的 `bend_direction`、`deadzone_value`、
-`filter_alpha`、`sensor_map` 等选项。
+`source_options` 支持 `bend_direction`、`deadzone_value`、`filter_alpha`、
+`adaptive_baseline`、`adaptive_baseline_alpha`、`sensor_map`、
+`renderer_remap_from_current` 以及 `calibration_mode`（auto/matrix/per_finger/none）。
+非法串口记录或串口读取失败会结束采集并停止控制，避免错误通道继续驱动手指。
 
 默认每帧 11 个值，支持 `v0,v1,...,v10;` 和连续 `v0;v1;...;v10;`。
 前五路按小指到拇指解释，六个尾部通道保留在调试读数中。
