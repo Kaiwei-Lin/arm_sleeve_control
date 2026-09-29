@@ -37,6 +37,34 @@ Bend5 只有一个拇指传感器，因此拇指弯曲与横摆联动。
 如需缩小手势幅度，可在 `sensors.glove` 设置六项
 `open_pose_rad` / `closed_pose_rad`，顺序同上，且不能超出 Aurora 手部限位。
 
+## 快速查找手套串口
+
+在 Linux 的项目目录运行，无需预先配置手套端口：
+
+```bash
+python tools/identify_glove_ports.py
+```
+
+启动时枚举所有 `/dev/ttyUSB*`，按端口编号排序，以 115200 / 8N1 同时读取，
+按 Bend5 的 11 路格式解析，每秒刷新 5 次。每个端口单独显示一行：
+`bend5` 是前五路原始值（小指、无名指、中指、食指、拇指），`tail` 是其余六路。
+无有效数据、超过 1 秒未收到新帧、打开或读取失败时显示 `NONE` 及原因。
+各端口独立采集，某个端口没有数据不会阻塞其他端口。
+
+逐个弯曲手指确认变化，再把对应路径填入 `configs/sensors.yaml` 的
+`sensors.glove.port`。按 `Ctrl+C` 退出并关闭串口；只扫描读取，不连接机器人。
+运行前先退出占用这些串口的采集或控制程序。
+若某行出现“读取失败”，该端口的采集已结束；排除原因后重新运行脚本。
+
+需要限时采集或保留输出时：
+
+```bash
+python tools/identify_glove_ports.py --duration 10 --no-clear
+```
+
+可用 `--prefix` 改设备路径前缀，`--baudrate` 改波特率，
+`--print-hz` 改刷新频率，`--stale-seconds` 改无数据超时。
+
 ## 单手套调试
 
 以下命令在 `sleeve_arm_control_v2` 目录运行。
