@@ -5,7 +5,7 @@ sensors:
   glove:
     enabled: false
     backend: bend5
-    port: null  # e.g. /dev/ttyUSB0 or COM5; must differ from Sleeve/IMU ports.
+    port: /dev/ttyUSB1  # e.g. /dev/ttyUSB0 or COM5; must differ from Sleeve/IMU ports.
     baudrate: 115200
     timeout_s: 0.02
     # Optional local Bend5 calibration JSON, relative to this YAML's directory.
