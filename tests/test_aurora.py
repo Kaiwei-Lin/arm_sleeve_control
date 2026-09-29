@@ -509,7 +509,9 @@ def test_profile_roundtrip_and_unverified_template(tmp_path):
     raw=yaml.safe_load(path.read_text());raw['verified']='false';path.write_text(yaml.safe_dump(raw))
     with pytest.raises(ValueError,match='boolean'):load_aurora_profile(path)
     p=load_aurora_profile(ROOT/'configs/robot_aurora.yaml')
-    assert p.connection['domain_id'] == 123 and all(g.name == f'{g.side}_manipulator' and g.count == 7 for g in p.groups)
+    assert p.connection['domain_id'] == 123 and all(g.name == f'{g.side}_manipulator' and g.count == 7 for g in p.groups if g.part == 'arm')
+    assert {(g.name, g.count) for g in p.groups if g.part == 'hand'} == {('left_hand', 6), ('right_hand', 6)}
+    p=load_aurora_profile(ROOT/'configs/aurora.unverified.yaml')
     with pytest.raises(ValueError,match='unverified'):p.validate(execute=True)
 
 
@@ -553,7 +555,8 @@ def test_cli_fake_preview_and_bounded_simulation(capsys):
 
 def test_cli_unverified_execute_rejected_before_confirmation_and_sdk(monkeypatch):
     monkeypatch.setattr(AuroraSession,'_load_sdk',lambda self:pytest.fail('SDK load'))
-    assert aurora_control.main(['joint','--side','left','--joint','elbow_flexion','--angle-deg','2','--execute'],
+    assert aurora_control.main(['joint','--side','left','--joint','elbow_flexion','--angle-deg','2','--execute',
+                               '--profile',str(ROOT/'configs/aurora.unverified.yaml')],
                               input_fn=lambda prompt:pytest.fail('confirmation before profile validation'))==1
 
 

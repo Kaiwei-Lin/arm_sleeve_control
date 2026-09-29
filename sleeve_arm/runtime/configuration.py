@@ -20,6 +20,8 @@ def parse_args(argv=None):
                         help="auto skips Sleeve for dual-IMU Aurora or --print-only; otherwise uses real Sleeve. "
                              "Use real to include elbow angles; none requires dual_imu and Aurora or --print-only.")
     parser.add_argument("--imus", choices=("fake", "real"), default="real")
+    parser.add_argument("--glove", choices=("none", "real", "fake"),
+                        help="override sensors.glove.enabled; Bend5 controls the selected Aurora hand")
     parser.add_argument("--robot", choices=("fake", "dymotor", "aurora", "aurora-fake"), default="dymotor")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--execute", action="store_true")
@@ -87,6 +89,8 @@ def parse_args(argv=None):
             parser.error("real robot execution cannot use --sleeve fake; use real sensor data")
         if args.imus != "real":
             parser.error("real robot execution requires --imus real")
+        if args.glove == "fake":
+            parser.error("real robot execution cannot use --glove fake")
 
     if args.prepare_aurora_fsm and (args.robot not in ("aurora", "aurora-fake") or not args.execute):
         parser.error("--prepare-aurora-fsm requires --robot aurora/aurora-fake --execute")
@@ -103,6 +107,7 @@ class ModelControlConfigs:
     shoulder_backend: str | None = None
     offline_preview: bool = False
     sleeve_mode: str = "real"
+    glove_mode: str = "none"
 
 
 def load_configs(args):
@@ -112,6 +117,9 @@ def load_configs(args):
     phase3 = load_phase3_config(args.phase3_config)
     phase4 = load_phase4_config(args.phase4_config)
     sensors = load_sensor_config(args.sensor_config)
+    glove_mode = args.glove or ("real" if sensors.glove.enabled else "none")
+    if glove_mode != "none" and not args.print_only and args.robot not in ("aurora", "aurora-fake"):
+        raise ValueError("glove control requires --robot aurora/aurora-fake or --print-only")
     backend = args.shoulder_predictor or phase4.predictor_backend
     if backend not in ("dual_imu", "flexarm_estimator"):
         raise ValueError("run_model_control shoulder predictor must be dual_imu or flexarm_estimator")
@@ -132,4 +140,5 @@ def load_configs(args):
     if sleeve_mode == "fake" and elbow.input_min is None:
         elbow = replace(elbow, input_min=0.0, input_max=2.0, angle_min_deg=0.0, angle_max_deg=90.0)
     robot = None if args.print_only or args.robot in ("aurora", "aurora-fake") else load_robot_config(args.robot_config)
-    return ModelControlConfigs(phase3, phase4, sensors, robot, elbow, backend, sleeve_mode=sleeve_mode)
+    return ModelControlConfigs(phase3, phase4, sensors, robot, elbow, backend,
+                               sleeve_mode=sleeve_mode, glove_mode=glove_mode)

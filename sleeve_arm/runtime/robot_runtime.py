@@ -10,7 +10,7 @@ from sleeve_arm.robot import factory
 
 
 class RobotRuntime:
-    def __init__(self, args, configs, *, clock=None, input_fn=None, print_fn=print):
+    def __init__(self, args, configs, *, clock=None, input_fn=None, print_fn=print, parts=None):
         self.args = args
         self.configs = configs
         self.clock = clock
@@ -27,6 +27,7 @@ class RobotRuntime:
         self.controller = None
         self.mapper = None
         self.startup = {}
+        self.parts = parts or (("arm", "hand") if configs.glove_mode != "none" else ("arm",))
 
     def describe_preview(self):
         from sleeve_arm.control.aurora_motion import preview_joint
@@ -48,6 +49,7 @@ class RobotRuntime:
         self.robot = factory.create_robot(
             self.backend, config, library_path=self.args.library, diagnostics=self.args.bridge_diagnostics,
             profile=self.args.aurora_profile, side=self.args.side,
+            parts=self.parts,
             execute=self.motion_enabled, operator_confirmed=False,
         )
         self.controller = SafeArmController(self.robot, self.robot.config, clock=self.clock)
@@ -66,8 +68,9 @@ class RobotRuntime:
 
     def prepare(self):
         self.startup = self.feedback()
-        self.mapper = (AuroraIntentMapper(self.robot, source_side=self.args.source_side, target_side=self.args.side)
-                       if self.is_aurora else ArmMapper(self.configs.elbow, self.startup))
+        if "arm" in self.parts:
+            self.mapper = (AuroraIntentMapper(self.robot, source_side=self.args.source_side, target_side=self.args.side)
+                           if self.is_aurora else ArmMapper(self.configs.elbow, self.startup))
         if not self.motion_enabled:
             self.print("DRY RUN: vendor startup used Servo On; no post-startup model target is sent.")
             return True
@@ -88,10 +91,20 @@ class RobotRuntime:
         self.controller.set_joint_positions(self.startup, dt=1.0 / self.configs.phase3.control_hz)
         return True
 
-    def apply(self, intent: MotionIntent, dt: float):
+    def apply(self, intent: MotionIntent, dt: float, *, hand_targets=None):
+        targets = self._map_targets(intent)
+        if hand_targets is not None:
+            targets.update(self._hand_targets(hand_targets))
         if not self.motion_enabled:
-            return self.preview(intent, dt)
-        return self.controller.set_joint_positions(self._map_targets(intent), dt=dt)
+            return self.controller.preview_positions(targets, dt=dt)
+        return self.controller.set_joint_positions(targets, dt=dt)
+
+    def _hand_targets(self, targets):
+        return {self.robot.joint_key(self.args.side, name, capability="hand_joints", part="hand"): value
+                for name, value in targets.items()}
+
+    def apply_hand(self, targets, dt):
+        return self.controller.set_joint_positions(self._hand_targets(targets), dt=dt)
 
     def preview(self, intent: MotionIntent, dt: float):
         return self.controller.preview_positions(self._map_targets(intent), dt=dt)
@@ -137,13 +150,15 @@ class PrintOnlyRuntime:
     def prepare(self):
         return True
 
-    def apply(self, intent: MotionIntent, dt: float):
-        return {name: value for name, value in (
+    def apply(self, intent: MotionIntent, dt: float, *, hand_targets=None):
+        targets = {name: value for name, value in (
             ("shoulder_flexion", intent.shoulder_flexion_rad),
             ("shoulder_abduction", intent.shoulder_abduction_rad),
             ("elbow_flexion", intent.elbow_flexion),
             ("upper_arm_rotation", intent.upper_arm_rotation_rad),
         ) if value is not None}
+        targets.update(hand_targets or {})
+        return targets
 
     def check_health(self):
         pass

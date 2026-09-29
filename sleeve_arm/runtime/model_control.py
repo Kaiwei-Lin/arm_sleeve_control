@@ -23,10 +23,11 @@ class RuntimeState(Enum):
 
 class ModelControlApp:
     def __init__(self, *, sensors, intents, robot, phase3, phase4, duration=None,
-                 telemetry=None, clock=None, print_fn=print):
+                 telemetry=None, clock=None, print_fn=print, glove=None):
         self.sensors = sensors
         self.intents = intents
         self.robot = robot
+        self.glove = glove
         self.phase3 = phase3
         self.phase4 = phase4
         self.duration = duration
@@ -51,8 +52,13 @@ class ModelControlApp:
             self.robot.connect()
             self.state = RuntimeState.ROBOT_READY
             self.sensors.start()
+            if self.glove is not None:
+                self.print("Bend5: keep fingers straight during startup calibration.")
+                self.glove.start()
             self.intents.prepare(self.sensors)
             sample, intent = self._wait_ready()
+            if self.glove is not None:
+                self.glove.wait_ready()
             self.state = RuntimeState.SENSOR_READY
             if not self.robot.prepare():
                 return 0
@@ -70,6 +76,7 @@ class ModelControlApp:
         finally:
             self.state = RuntimeState.STOPPING
             for label, close in (("shutdown", self.robot.shutdown),
+                                 ("glove close", None if self.glove is None else self.glove.close),
                                  ("source close", None if self.sensors is None else self.sensors.close)):
                 if close is not None:
                     try:
@@ -128,6 +135,8 @@ class ModelControlApp:
             now = self.clock.monotonic()
             self.cycles += 1
             self.robot.check_health()
+            if self.glove is not None:
+                self.glove.targets()  # An enabled glove's dropout faults the whole control session.
             if incoming is not None:
                 sample = incoming
             # Check the last known timestamp even when latest() returns None.
@@ -147,15 +156,15 @@ class ModelControlApp:
                 if predicted is not None:
                     # Sensor-driven streaming: apply a limited step, never a
                     # blocking MoveCommand trajectory in this per-sample loop.
-                    targets = self.robot.apply(predicted, period)
+                    targets = self._apply(predicted, period)
                     intent = predicted
                     self.predictions += 1
                     self.state = RuntimeState.RUNNING
-            elif getattr(self.robot, "stream_between_samples", False) and self.predictions:
+            elif self.glove is not None or (getattr(self.robot, "stream_between_samples", False) and self.predictions):
                 # Keep advancing toward the latest fresh intent at the control
                 # rate, even if sensor samples arrive more slowly. The watchdog
                 # above stops reuse as soon as the sample becomes stale.
-                targets = self.robot.apply(intent, period)
+                targets = self._apply(intent, period)
             if now - last_print >= 1.0:
                 self.telemetry.report(
                     sample=sample, intent=intent, targets=targets, feedback=self.robot.feedback(),
@@ -164,6 +173,13 @@ class ModelControlApp:
                                cycles=self.cycles, predictions=self.predictions, invalid=self.invalid,
                                stale=self.stale, rotation_invalid=self.rotation_invalid),
                 )
+                if self.glove is not None:
+                    self.glove.report(self.print)
                 last_print = now
             next_tick += period
             self.clock.sleep(max(0.0, next_tick - self.clock.monotonic()))
+
+    def _apply(self, intent, period):
+        # Recheck after inference: a slow prediction must not send an expired glove sample.
+        kwargs = {} if self.glove is None else {"hand_targets": self.glove.targets()}
+        return self.robot.apply(intent, period, **kwargs)

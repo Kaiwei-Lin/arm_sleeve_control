@@ -1,6 +1,24 @@
 # Serial values come from the previously validated arm_data_collector implementation.
 # Port names remain unset because they are machine-specific.
 sensors:
+  # Optional single Bend5 glove; enable here or pass --glove real/fake.
+  glove:
+    enabled: false
+    backend: bend5
+    port: null  # e.g. /dev/ttyUSB0 or COM5; must differ from Sleeve/IMU ports.
+    baudrate: 115200
+    timeout_s: 0.02
+    # Relative paths are resolved from this YAML's directory.
+    project_path: ../../electronic_skin_project_v9_11
+    calibration_path: null  # existing Bend5 calibration JSON, if available
+    stale_timeout_s: 0.25
+    startup_timeout_s: 10.0
+    source_options:
+      expected_fields: 11
+      zero_on_start: true  # keep all five fingers straight during startup
+      zero_frames: 30
+      per_finger_max_delta: null  # use calibration JSON; otherwise 1000.0 (tune per glove)
+      filter_alpha: 0.75
   sleeve:
     enabled: true
     backend: serial_ascii

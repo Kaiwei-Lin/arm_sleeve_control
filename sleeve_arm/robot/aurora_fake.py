@@ -61,7 +61,8 @@ class FakeAuroraClient:
         for group in self.profile.groups:
             vector = [.17] * group.count
             for joint in group.joints:
-                vector[joint.index] = joint.to_sdk(0.)
+                initial = min(joint.limits.max_position, max(joint.limits.min_position, 0.))
+                vector[joint.index] = joint.to_sdk(initial)
             self.groups[group.name] = {'position': vector, 'velocity': [0.] * group.count, 'effort': []}
         self.fsm = self.profile.allowed_fsm[0] if self.profile.allowed_fsm else 0
         self.upper_fsm = 0

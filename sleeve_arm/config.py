@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +104,23 @@ class ShoulderImuConfig:
 
 
 @dataclass(frozen=True)
+class GloveConfig:
+    enabled: bool = False
+    backend: str = "bend5"
+    port: str | None = None
+    baudrate: int = 115200
+    timeout_s: float = 0.02
+    project_path: Path = PROJECT_ROOT.parent / "electronic_skin_project_v9_11"
+    calibration_path: Path | None = None
+    source_options: dict[str, Any] = field(default_factory=dict)
+    stale_timeout_s: float = 0.25
+    startup_timeout_s: float = 10.0
+    # Aurora reference demo order: thumb bend, index, middle, ring, pinky, thumb swing.
+    open_pose_rad: tuple[float, ...] = (1.18, 0.22, 0.22, 0.22, 0.22, 0.05)
+    closed_pose_rad: tuple[float, ...] = (0.35, 1.40, 1.40, 1.40, 1.40, 1.25)
+
+
+@dataclass(frozen=True)
 class SensorConfig:
     sleeve: SensorEndpointConfig
     imu1: SensorEndpointConfig
@@ -114,6 +131,7 @@ class SensorConfig:
     upper_arm_rotation: UpperArmRotationConfig
     synchronization: SynchronizationConfig
     recording: RecordingConfig
+    glove: GloveConfig = field(default_factory=GloveConfig)
 
 
 @dataclass(frozen=True)
@@ -383,6 +401,35 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
     recording_config = RecordingConfig(output_dir.resolve(), str(recording["format"]))
     if recording_config.format != "csv":
         raise ValueError("only csv recording is supported")
+    glove_raw = sensors.get("glove", {})
+    if not isinstance(glove_raw, dict):
+        raise ValueError("sensors.glove must be a mapping")
+    glove_raw = dict(glove_raw)
+    for name in ("project_path", "calibration_path"):
+        if glove_raw.get(name) is not None:
+            value = Path(glove_raw[name]).expanduser()
+            glove_raw[name] = (config_path.parent / value).resolve()
+    for name in ("open_pose_rad", "closed_pose_rad"):
+        if name in glove_raw:
+            glove_raw[name] = tuple(float(value) for value in glove_raw[name])
+    glove = GloveConfig(**glove_raw)
+    if type(glove.enabled) is not bool or glove.backend != "bend5":
+        raise ValueError("glove requires boolean enabled and backend=bend5")
+    if glove.port is not None and (not isinstance(glove.port, str) or not glove.port.strip()):
+        raise ValueError("glove.port must be a nonempty string or null")
+    if type(glove.baudrate) is not int or glove.baudrate <= 0:
+        raise ValueError("glove.baudrate must be a positive integer")
+    if not all(math.isfinite(value) and value > 0 for value in (
+        glove.timeout_s, glove.stale_timeout_s, glove.startup_timeout_s,
+    )):
+        raise ValueError("glove timeouts must be positive and finite")
+    if not isinstance(glove.source_options, dict):
+        raise ValueError("glove.source_options must be a mapping")
+    if set(glove.source_options) & {"port", "baudrate", "timeout", "calibration_path"}:
+        raise ValueError("configure glove port/baudrate/timeout_s/calibration_path outside source_options")
+    for pose in (glove.open_pose_rad, glove.closed_pose_rad):
+        if len(pose) != 6 or not all(math.isfinite(value) for value in pose):
+            raise ValueError("glove open/closed poses must contain six finite radians")
     return SensorConfig(
         sleeve,
         *(endpoints[name] for name in IMU_NAMES),
@@ -390,6 +437,7 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
         rotation,
         synchronization,
         recording_config,
+        glove,
     )
 
 

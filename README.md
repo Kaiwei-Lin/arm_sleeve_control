@@ -679,6 +679,8 @@ pytest
 
 ## 项目结构
 
+IMU 与 Bend5 手套联合控制、单手套调试和端口/校准配置，见 [手套控制说明](docs/glove_control.md)。
+
 ```text
 configs/robot.yaml                 motor/CAN、网络与待验证安全参数
 configs/sensors.yaml               Sleeve、Optional IMU、同步与记录配置

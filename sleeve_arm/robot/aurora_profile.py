@@ -285,9 +285,11 @@ def load_aurora_profile(path: str | Path):
         raise ValueError('profile must be a YAML mapping')
     groups = []
     for g in raw.pop('groups', []):
+        g = dict(g)  # YAML anchors may share group/joint mappings between hands.
         joints = []
         for j in g.pop('joints', []):
-            raw_limits = j.pop('limits', {})
+            j = dict(j)
+            raw_limits = dict(j.pop('limits', {}))
             if raw_limits.pop('name', j['name']) != j['name']:
                 raise ValueError('joint limit name mismatch')
             limits = JointSafetyParameters(name=j['name'], **raw_limits)

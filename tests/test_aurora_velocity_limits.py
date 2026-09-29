@@ -25,6 +25,8 @@ def test_normal_profiles_match_official_position_and_velocity_limits(filename):
     }
     velocities = (7.75, 7.75, 6.28, 6.28, 6.28, 9.2153, 9.2153)
     for group in profile.groups:
+        if group.part != "arm":
+            continue
         assert group.sdk_position_limits == positions[group.side]
         for joint in group.joints:
             limits = joint.limits

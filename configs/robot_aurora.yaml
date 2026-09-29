@@ -169,6 +169,56 @@ groups:
       max_feedback_velocity: 6.28
       max_position_step: 0.0628
       max_tracking_error: 3.14
+# Hand order/bounds: electronic_skin_project_v9_11/docs/reference/aurora_reference_demo.py.
+# These are direct SDK radians; speed/step/tracking limits are application limits.
+- &aurora_hand
+  name: left_hand
+  side: left
+  part: hand
+  count: 6
+  verified: true
+  capabilities: [joint_position, hand_joints]
+  sdk_position_limits: [[0.12, 1.28], [0.17, 1.78], [0.17, 1.78], [0.17, 1.78], [0.17, 1.78], [0.0, 1.68]]
+  max_tracking_error: 0.30
+  joints:
+  - &thumb_bend
+    name: thumb_bend
+    index: 0
+    sign: 1
+    zero: 0.0
+    kind: finger
+    verified: true
+    limits:
+      min_position: 0.12
+      max_position: 1.28
+      max_velocity: 0.8
+      max_position_step: 0.02
+      max_tracking_error: 0.30
+  - &finger
+    <<: *thumb_bend
+    name: index_flexion
+    index: 1
+    limits:
+      min_position: 0.17
+      max_position: 1.78
+      max_velocity: 0.8
+      max_position_step: 0.02
+      max_tracking_error: 0.30
+  - {<<: *finger, name: middle_flexion, index: 2}
+  - {<<: *finger, name: ring_flexion, index: 3}
+  - {<<: *finger, name: pinky_flexion, index: 4}
+  - <<: *thumb_bend
+    name: thumb_swing
+    index: 5
+    limits:
+      min_position: 0.0
+      max_position: 1.68
+      max_velocity: 0.8
+      max_position_step: 0.02
+      max_tracking_error: 0.30
+- <<: *aurora_hand
+  name: right_hand
+  side: right
 allow_missing_velocity_cmd: true
 minimum_stable_level: 100
 stable_wait_seconds: 3.0

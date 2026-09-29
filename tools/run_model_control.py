@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sleeve_arm.runtime.configuration import load_configs, parse_args
 from sleeve_arm.runtime.intent_pipeline import create_intent_pipeline
+from sleeve_arm.runtime.glove_control import create_glove_runtime
 from sleeve_arm.runtime.model_control import ModelControlApp
 from sleeve_arm.runtime.robot_runtime import create_robot_runtime
 from sleeve_arm.runtime.sensors import create_sensor_runtime
@@ -22,6 +23,7 @@ def main(argv=None) -> int:
         sensors = create_sensor_runtime(args, configs)
         intents = create_intent_pipeline(args, configs)
         robot = create_robot_runtime(args, configs)
+        glove = create_glove_runtime(args, configs)
     except Exception as exc:
         print(f"ERROR [INIT] {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
@@ -29,6 +31,7 @@ def main(argv=None) -> int:
         sensors=sensors,
         intents=intents,
         robot=robot,
+        glove=glove,
         phase3=configs.phase3,
         phase4=configs.phase4,
         duration=args.duration,
