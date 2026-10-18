@@ -66,9 +66,9 @@ class RobotRuntime:
         if isinstance(self.robot, DyMotorArm):
             self.print(f"loaded_so: {self.robot.loaded_library_path}")
 
-    def prepare(self):
+    def prepare(self, *, map_arm_intents=True):
         self.startup = self.feedback()
-        if "arm" in self.parts:
+        if "arm" in self.parts and map_arm_intents:
             self.mapper = (AuroraIntentMapper(self.robot, source_side=self.args.source_side, target_side=self.args.side)
                            if self.is_aurora else ArmMapper(self.configs.elbow, self.startup))
         if not self.motion_enabled:
@@ -103,8 +103,12 @@ class RobotRuntime:
         return {self.robot.joint_key(self.args.side, name, capability="hand_joints", part="hand"): value
                 for name, value in targets.items()}
 
-    def apply_hand(self, targets, dt):
-        return self.controller.set_joint_positions(self._hand_targets(targets), dt=dt)
+    def apply_hand(self, targets, dt, *, arm_targets=None):
+        combined = self._hand_targets(targets)
+        if arm_targets is not None:
+            combined.update({self.robot.joint_key(self.args.side, name): value
+                             for name, value in arm_targets.items()})
+        return self.controller.set_joint_positions(combined, dt=dt)
 
     def preview(self, intent: MotionIntent, dt: float):
         return self.controller.preview_positions(self._map_targets(intent), dt=dt)

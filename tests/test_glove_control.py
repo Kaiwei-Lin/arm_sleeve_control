@@ -1,5 +1,7 @@
 """Bend5 wire data through the real calibration code into a fake Aurora session."""
 import json
+import math
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -175,8 +177,145 @@ def test_debug_preview_never_constructs_robot_and_execute_rejects_fake(monkeypat
     monkeypatch.setattr(factory, "create_robot", lambda *a, **kw: pytest.fail("preview connected a robot"))
     assert debug_glove.main(["--glove", "fake", "--duration", ".02"]) == 0
     assert "target_rad=" in capsys.readouterr().out
+    assert debug_glove.main(["--glove", "fake", "--duration", ".02", "--arm-forward-deg", "45"]) == 0
+    assert "45 deg (NO MOTION)" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         debug_glove.parse_args(["--execute", "--glove", "fake", "--duration", "1"])
+
+
+@pytest.fixture
+def debug_session(monkeypatch):
+    from tools import debug_glove
+
+    session = fake_session(profile=gr3_fake_profile())
+    actual_factory = factory.create_robot
+    monkeypatch.setattr(factory, "create_robot", lambda backend, config, **kw:
+                        actual_factory(backend, config, session=session, **kw))
+    monkeypatch.setattr(debug_glove, "time", session.clock)
+    glove = GloveRuntime(load_sensor_config().glove, mode="fake", clock=session.clock)
+    monkeypatch.setattr(debug_glove, "GloveRuntime", lambda *a, **kw: glove)
+
+    def run(*options, confirm=lambda _: "YES"):
+        monkeypatch.setattr(debug_glove, "RobotRuntime", lambda *a, **kw:
+                            RobotRuntime(*a, **kw, clock=session.clock, input_fn=confirm))
+        return debug_glove.main(["--execute", "--duration", "6", *options])
+
+    return session, glove, run
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_debug_lifts_and_holds_same_side_from_fresh_pose_without_resetting_other_joints(debug_session, side, capsys):
+    session, glove, run = debug_session
+    arm, hand = f"{side}_manipulator", f"{side}_hand"
+    initial = [-.2, .1 if side == "left" else -.1, .2, -.6, .1, -.1, .1]
+
+    def confirm(prompt):
+        assert "YES" in prompt
+        session.fake_client.groups[arm]["position"] = list(initial)
+        session.clock.sleep(.01)
+        return "YES"
+
+    assert run("--side", side, "--arm-forward-deg", "45", confirm=confirm) == 0
+    commands = session.fake_client.commands
+    assert commands and all(set(command) == {arm, hand} for command in commands)
+    assert commands[0][arm] == pytest.approx(initial)
+    assert all(command[arm][1:] == pytest.approx(initial[1:]) for command in commands)
+    pitches = [command[arm][0] for command in commands]
+    assert pitches[-1] == pytest.approx(-math.pi / 4)
+    assert pitches[-20:] == pytest.approx([-math.pi / 4] * 20)
+    peak_step = 1.5 * (math.pi / 4 - .2) / 5 * .01
+    assert all(0 <= before - after <= peak_step + 1e-10 for before, after in zip(pitches, pitches[1:]))
+    assert commands[-1][hand] != commands[0][hand]
+    assert session.fake_client.close_count == 1 and glove.source is None
+    assert "45 deg" in capsys.readouterr().out
+
+
+def test_debug_zero_pose_keeps_hand_only(debug_session):
+    session, glove, run = debug_session
+    assert run("--duration", ".05", "--arm-forward-deg", "0") == 0
+    assert session.fake_client.commands
+    assert all(set(command) == {"right_hand"} for command in session.fake_client.commands)
+
+
+def test_debug_cancel_prevents_arm_and_hand_commands(debug_session):
+    session, glove, run = debug_session
+    assert run("--arm-forward-deg", "45", confirm=lambda _: "NO") == 0
+    assert session.fake_client.commands == []
+    assert session.fake_client.close_count == 1 and glove.source is None
+
+
+def test_debug_rejects_out_of_range_pose_before_confirmation(debug_session, capsys):
+    session, glove, run = debug_session
+    assert run("--arm-forward-deg", "180", confirm=lambda _: pytest.fail("invalid pose reached confirmation")) == 1
+    assert session.fake_client.commands == []
+    assert "calibrated limits" in capsys.readouterr().err
+    assert session.fake_client.close_count == 1 and glove.source is None
+
+
+def test_debug_glove_dropout_stops_lifting_and_closes_resources(debug_session, capsys):
+    session, glove, run = debug_session
+    stopped_at = []
+
+    def confirm(_):
+        glove.mode = "real"  # Keep the last packet; stop synthesizing new ones.
+        stopped_at.append(session.clock.monotonic())
+        return "YES"
+
+    assert run("--arm-forward-deg", "45", confirm=confirm) == 1
+    assert "glove watchdog" in capsys.readouterr().err
+    assert session.fake_client.commands
+    assert abs(session.fake_client.commands[-1]["right_manipulator"][0]) < .01
+    assert session.clock.monotonic() - stopped_at[0] < .3
+    assert session.fake_client.close_count == 1 and glove.source is None
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--arm-forward-deg", "-1"), ("--arm-forward-deg", "nan"), ("--arm-forward-deg", "inf"),
+    ("--arm-move-seconds", "0"), ("--arm-move-seconds", "-1"),
+    ("--arm-move-seconds", "nan"), ("--arm-move-seconds", "inf"),
+])
+def test_debug_pose_cli_rejects_invalid_numbers(flag, value):
+    from tools.debug_glove import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args([flag, value])
+
+
+@pytest.mark.parametrize("options", [(), ("--arm-forward-deg", "0", "--side", "left", "--duration", "60"), ("--help",)])
+def test_debug_launcher_defaults_and_overrides_without_hardware(tmp_path, monkeypatch, options):
+    from tools.debug_glove import parse_args
+
+    root = Path(__file__).resolve().parents[1]
+    python = tmp_path / "python"
+    python.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "if sys.argv[1] == '-c':\n"
+        "    print(__file__ if 'sys.executable' in sys.argv[2] else '')\n"
+        "else:\n"
+        "    print(json.dumps(dict(argv=sys.argv[1:], cwd=os.getcwd(), "
+        "sudo=os.environ.get('GLOVE_TEST_SUDO') == '1')))\n"
+    )
+    python.chmod(0o755)
+    sudo = tmp_path / "sudo"
+    sudo.write_text('#!/bin/sh\nexport GLOVE_TEST_SUDO=1\nexec "$@"\n')
+    sudo.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.delenv("GLOVE_TEST_SUDO", raising=False)
+    result = subprocess.run(["bash", str(root / "debug_glove.sh"), *options], cwd=tmp_path,
+                            check=True, capture_output=True, text=True)
+    captured = json.loads(result.stdout)
+    assert captured["cwd"] == str(root)
+    assert captured["argv"][:2] == ["-u", "tools/debug_glove.py"]
+    if "--help" in options:
+        assert not captured["sudo"]
+        return
+    args = parse_args(captured["argv"][2:])
+    assert captured["sudo"] and args.execute
+    assert args.arm_move_seconds == 5
+    assert args.arm_forward_deg == (0 if options else 45)
+    assert args.duration == (60 if options else 3000)
+    assert args.side == ("left" if options else "right")
 
 
 def test_local_matrix_calibration_reorders_channels_and_removes_crosstalk(tmp_path):

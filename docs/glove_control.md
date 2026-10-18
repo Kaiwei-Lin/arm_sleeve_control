@@ -86,9 +86,36 @@ python tools/debug_glove.py --glove fake --robot aurora-fake --duration 3
 python tools/debug_glove.py --side right --execute --duration 30
 ```
 
-`--side left` 选择左手。单手调试只下发所选 `left_hand` / `right_hand`，
-不会抬臂或修改其他机器人关节；默认要求机器人已处于可控制的 PdStand。
+`--side left` 选择左手。直接运行 Python 时默认只下发所选
+`left_hand` / `right_hand`，不会抬臂；默认要求机器人已处于可控制的 PdStand。
 只有显式添加 `--prepare-aurora-fsm` 才请求原有 FSM 准备流程。
+
+手掌被大腿挡住时，可以同时让同侧肩部前抬到相对零位的 **45°**：
+
+```bash
+bash debug_glove.sh
+# 等价的主要选项：
+python tools/debug_glove.py --side right --execute --duration 3000 --arm-forward-deg 45 --arm-move-seconds 5
+```
+
+启动脚本默认控制右手，时长 3000 秒（50 分钟）。手套完成伸直调零并在现场输入
+`YES` 后，从最新反馈姿态平滑前抬，默认至少用 5 秒到达目标命令，随后持续下发
+45° 肩部目标并同步跟随手套。该角度是相对机器人标定零位的绝对角度，
+不是在当前角度上再增加 45°；按当前 profile，SDK 的 shoulder pitch 目标为
+`-0.7854 rad`。只改变同侧肩前屈和手指目标，其余手臂关节保持启动姿态。
+抬臂仍经过现有限速、限位和反馈检查，调试时长包含抬臂过程；
+循环延迟或 profile 限速可能延长抬臂时间。
+
+脚本会透传参数，例如 `bash debug_glove.sh --duration 60 --side left`。
+`bash debug_glove.sh --arm-forward-deg 0` 恢复仅控制手指，**不会主动放下手臂**。
+Python 入口的 `--arm-forward-deg` 默认是 0，保持原来的仅手部行为。
+按 `Ctrl+C`、到时或传感器/机器人故障后停止下发，不自动放下手臂或恢复原姿态。
+
+抬臂与手指联动的离线验证：
+
+```bash
+python tools/debug_glove.py --glove fake --robot aurora-fake --duration 7 --arm-forward-deg 45
+```
 
 ## IMU 与手套同时控制
 
