@@ -39,6 +39,7 @@ def fake_profile():
         stop_policy='stop_publishing', verified=True, simulated=True,
         verification_note='SYNTHETIC TEST ONLY; NOT HARDWARE PARAMETERS',
         robot_type='FAKE', authority_verified=True,
+        smooth_limits=False,  # Legacy strict-mode contract tests; GR3 uses its site profile.
     )
 
 

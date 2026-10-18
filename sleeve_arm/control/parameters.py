@@ -17,6 +17,8 @@ class JointSafetyParameters:
     # Separate measured overspeed detection from the command slew rate.
     # None preserves the legacy fallback to max_velocity.
     max_feedback_velocity: float | None = None
+    # Aurora uses limits to shape commands instead of faulting on finite feedback.
+    smooth_limits: bool = False
 
 
 @dataclass(frozen=True)

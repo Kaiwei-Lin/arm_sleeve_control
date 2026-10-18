@@ -75,12 +75,12 @@ class AuroraGroup:
     capabilities: tuple[str, ...] = ('joint_position',)
     verified: bool = False
 
-    def check_vector(self, vector, *, source="unspecified"):
+    def check_vector(self, vector, *, source="unspecified", enforce_limits=True):
         if not self.count or len(vector) != self.count:
             raise ValueError(f'{self.name}: vector dimension mismatch/unverified DOF')
         for i, value in enumerate(vector):
             finite(value, f'{self.name}[{i}]')
-            if self.sdk_position_limits is not None:
+            if enforce_limits and self.sdk_position_limits is not None:
                 low, high = self.sdk_position_limits[i]
                 if not low <= value <= high:
                     raise ValueError(
@@ -88,12 +88,39 @@ class AuroraGroup:
                         f'value_rad={value:.17g}; min_rad={low:.17g}; max_rad={high:.17g}; '
                         f'excess_rad={max(low - value, value - high):.9g}'
                     )
-        for joint in self.joints:
+        for joint in self.joints if enforce_limits else ():
             if joint.index is not None and joint.sign is not None and joint.zero is not None:
                 value = joint.from_sdk(vector[joint.index])
                 low, high = joint.limits.min_position, joint.limits.max_position
                 if (low is not None and value < low) or (high is not None and value > high):
                     raise ValueError(f'{joint.name}: semantic position outside limits')
+
+    def smooth_vector(self, previous, requested, measured, dt):
+        """Apply bounds, command slew and tracking envelopes to every SDK slot."""
+        from sleeve_arm.control.safety import safe_target
+        for vector in (previous, requested, measured):
+            self.check_vector(vector, enforce_limits=False)
+        joints = {joint.index: joint for joint in self.joints}
+        result = []
+        for index, (old, target, feedback) in enumerate(zip(previous, requested, measured)):
+            joint = joints.get(index)
+            if joint is not None:
+                old, target, feedback = (joint.from_sdk(v) for v in (old, target, feedback))
+                limits = replace(joint.limits, smooth_limits=True, max_tracking_error=min(
+                    joint.limits.max_tracking_error, self.max_tracking_error))
+            else:
+                # Unmapped slots normally hold; use the slowest configured slew
+                # only if their startup pose or tracking error needs recovery.
+                low, high = self.sdk_position_limits[index]
+                limits = JointSafetyParameters(
+                    f'{self.name}[{index}]', low, high,
+                    max_velocity=min(j.limits.max_velocity for j in self.joints),
+                    max_position_step=min(j.limits.max_position_step for j in self.joints),
+                    max_tracking_error=self.max_tracking_error, smooth_limits=True,
+                )
+            value = safe_target(limits, old, target, dt, measured=feedback)
+            result.append(joint.to_sdk(value) if joint is not None else value)
+        return result
 
 
 @dataclass(frozen=True)
@@ -117,6 +144,7 @@ class AuroraRobotProfile:
     allow_missing_velocity_cmd: bool = False
     minimum_stable_level: float = 100.0
     stable_wait_seconds: float = 3.0
+    smooth_limits: bool = True
 
     @property
     def control_period_s(self):
@@ -142,7 +170,7 @@ class AuroraRobotProfile:
     def validate(self, *, execute=False, simulation=False, groups=None):
         if self.api_family != API_FAMILY or self.sdk_version != SDK_VERSION:
             raise ValueError(f'unsupported api_family/version {self.api_family}/{self.sdk_version}; only 0.1.8, no fallback')
-        for name in ('verified', 'simulated', 'authority_verified', 'allow_missing_velocity_cmd'):
+        for name in ('verified', 'simulated', 'authority_verified', 'allow_missing_velocity_cmd', 'smooth_limits'):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f'{name} must be boolean')
         if set(self.connection) - {'domain_id', 'robot_name', 'namespace', 'is_ros_compatible'}:
@@ -272,7 +300,11 @@ class AuroraRobotProfile:
                 name = f'{group.side}.{joint.name}' if len(sides) > 1 else joint.name
                 if name in joints:
                     raise ValueError('ambiguous joint names')
-                joints[name] = replace(joint.limits, name=name,
+                tracking = joint.limits.max_tracking_error
+                if self.smooth_limits and tracking is not None and group.max_tracking_error is not None:
+                    tracking = min(tracking, group.max_tracking_error)
+                joints[name] = replace(joint.limits, name=name, smooth_limits=self.smooth_limits,
+                                       max_tracking_error=tracking,
                                        max_feedback_velocity=self.feedback_velocity_limit(group, joint))
         # This default is only for constructing incomplete read-only profiles.
         period = self.control_period_s if self.control_hz is not None else 0.02

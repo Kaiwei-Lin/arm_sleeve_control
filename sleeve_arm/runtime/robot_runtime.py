@@ -59,6 +59,7 @@ class RobotRuntime:
             limits = {
                 name: dict(command_rad_s=joint.max_velocity,
                            feedback_rad_s=joint.max_feedback_velocity,
+                           smooth_limits=joint.smooth_limits,
                            step_rad=joint.max_position_step)
                 for name, joint in self.robot.config.joints.items()
             }

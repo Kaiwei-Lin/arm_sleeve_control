@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from sleeve_arm.control.controller import SafeArmController
-from sleeve_arm.control.safety import SafetyError
+from sleeve_arm.control.safety import SafetyError, clamp_position
 from sleeve_arm.robot.aurora_profile import finite
 
 
@@ -38,6 +38,8 @@ class UpperLimbService:
     def _bounds(self, key, target):
         target = finite(target, key)
         limits = self.controller.config.joints[key]
+        if self.profile.smooth_limits:
+            return clamp_position(limits, target)
         if not limits.min_position <= target <= limits.max_position:
             raise ValueError(f"{key}: requested target outside calibrated limits")
         return target
@@ -86,7 +88,7 @@ class UpperLimbService:
             return self._run(lambda elapsed: targets, None, targets)
         for key, target in targets.items():
             peak = 1.5 * abs(target - starts[key]) / duration  # cubic smoothstep derivative
-            self._speed(key, peak)
+            duration *= self._speed(key, peak)
         def path(elapsed):
             alpha = min(elapsed / duration, 1.0)
             smooth = alpha * alpha * (3.0 - 2.0 * alpha)
@@ -95,8 +97,10 @@ class UpperLimbService:
 
     def _speed(self, key, peak):
         limits = self.controller.config.joints[key]
-        if peak > limits.max_velocity or peak * self.period > limits.max_position_step:
+        factor = max(1., peak / min(limits.max_velocity, limits.max_position_step / self.period))
+        if factor > 1 and not self.profile.smooth_limits:
             raise ValueError(f"{key}: trajectory exceeds velocity/step limits; increase duration/period")
+        return factor
 
     def swing_arm(self, *, side, joint, amplitude_deg, period_s, cycles, center="current", settle_duration_s=2.0):
         key = self._key(side, joint)
@@ -109,19 +113,25 @@ class UpperLimbService:
         states = self.controller.read_joint_states()
         current = states[key].position
         middle = current if center == "current" else finite(center, "center (semantic radians)")
-        self._bounds(key, middle - amplitude)
-        self._bounds(key, middle + amplitude)
+        low = self._bounds(key, middle - amplitude)
+        high = self._bounds(key, middle + amplitude)
+        if self.profile.smooth_limits:
+            middle, amplitude = (low + high) / 2, (high - low) / 2
         # Raised cosine: starts/ends at the lower endpoint with zero velocity,
         # visits both extrema once per cycle. Bounded entry/exit moves are explicit.
-        self._speed(key, 2.0 * math.pi * amplitude / period)
+        period *= self._speed(key, 2.0 * math.pi * amplitude / period)
         entry = middle - amplitude
         entry_duration = self._duration(settle_duration_s)
         self._speed(key, 1.5 * abs(entry - current) / entry_duration)
         self._speed(key, 1.5 * amplitude / entry_duration)
         began = self.clock.monotonic()
-        self.move_joints({key: entry}, duration_s=entry_duration)
-        self._run(lambda t: {key: middle - amplitude * math.cos(2 * math.pi * t / period)},
-                  period * cycles, {key: entry})
+        result = self.move_joints({key: entry}, duration_s=entry_duration)
+        if not result.arrived:
+            return result
+        result = self._run(lambda t: {key: middle - amplitude * math.cos(2 * math.pi * t / period)},
+                           period * cycles, {key: entry})
+        if not result.arrived:
+            return MotionResult(result.submitted, False, result.targets_rad, self.clock.monotonic() - began)
         result = self.move_joints({key: middle}, duration_s=entry_duration)
         return MotionResult(result.submitted, result.arrived, result.targets_rad, self.clock.monotonic() - began)
 
@@ -145,28 +155,38 @@ class UpperLimbService:
         began = self.clock.monotonic()
         last = began
         next_tick = began + self.period
+        last_progress, previous_applied = began, None
         try:
             while True:
                 self.clock.sleep(max(0.0, next_tick - self.clock.monotonic()))
                 now = self.clock.monotonic()
                 dt = now - last
                 # Never skip many trajectory steps or expand the allowed step after a delay.
-                if dt > self.period * 1.5 or dt <= 0:
+                if dt <= 0 or (dt > self.period * 1.5 and not self.profile.smooth_limits):
                     raise SafetyError("trajectory scheduling delay; request not completed")
                 elapsed = now - began if duration is None else min(now - began, duration)
                 requested = path(elapsed)
                 applied = self.controller.set_joint_positions(
                     requested, dt=min(dt, self.period), require_exact=duration is not None,
                 )
+                if applied != previous_applied:
+                    last_progress, previous_applied = now, applied
+                elif (self.profile.smooth_limits and now - last_progress >= self.profile.arrival_timeout_s
+                      and any(abs(applied[k] - v) > 1e-10 for k, v in targets.items())):
+                    # A stationary tracking envelope is a pending target, not a fault.
+                    return MotionResult(False, False, dict(targets), now - began)
                 last = now
                 if duration is None:
-                    if all(applied[k] == v for k, v in targets.items()):
+                    if all(abs(applied[k] - v) <= 1e-10 for k, v in targets.items()):
                         break
-                    next_tick += self.period
+                    next_tick = (max(next_tick + self.period, now + self.period) if self.profile.smooth_limits
+                                 else next_tick + self.period)
                 else:
-                    if elapsed >= duration - 1e-9:
+                    if elapsed >= duration - 1e-9 and (not self.profile.smooth_limits
+                            or all(abs(applied[k] - v) <= 1e-10 for k, v in targets.items())):
                         break
-                    next_tick = min(next_tick + self.period, began + duration)
+                    next_tick = (max(next_tick + self.period, now + self.period) if self.profile.smooth_limits
+                                 else min(next_tick + self.period, began + duration))
             deadline = self.clock.monotonic() + self.profile.arrival_timeout_s
             while True:
                 states = self.controller.read_joint_states()

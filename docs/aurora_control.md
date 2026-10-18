@@ -127,23 +127,32 @@ cp configs/robot_aurora.yaml configs/aurora.site.yaml
 | `stop_policy` | `stop_publishing`；cleanup 不切 FSM、不恢复姿态 |
 | `groups[].name`, `side`, `part`, `count` | GR3 使用 left/right_manipulator、arm、7；profile 验证其布局 |
 | `groups[].sdk_position_limits` | 长度等于 count 的 `[SDK下限, SDK上限]` 列表，必须覆盖每一槽，包括未具名槽位；不能填猜测值 |
-| `groups[].max_tracking_error` | 完整组的最大跟踪差 rad，也检查未映射槽位 |
+| `groups[].max_tracking_error` | 完整组的最大目标超前量 rad，也约束未映射槽位；与关节跟踪阈值取更小者 |
 | `groups[].capabilities`, `verified` | 已确认的 joint_position 等能力、该侧实际组的验证状态 |
 | `joints[].name`, `index` | GR3: shoulder_flexion=0、shoulder_abduction=1、upper_arm_rotation=2、elbow_flexion=3；未控制腕部 4/5/6 完整保留 |
 | `joints[].sign`, `zero` | 分别是 direction（±1）与 zero_position（SDK rad） |
 | `joints[].limits` | 语义 rad 的 min/max_position、max_position_step、max_tracking_error，以及 rad/s 的指令限速 max_velocity；缺失则拒绝 execute |
 | `joints[].limits.max_feedback_velocity` | 独立的实测速度上限，单位 rad/s；GR3 手臂缺省取官方关节速度上限，其他型号缺省沿用 max_velocity；不能低于指令限速或超过 GR3 对应关节上限 |
+| `smooth_limits` | 默认 true，适用于双侧手臂和灵巧手；位置、速度、步长、跟踪误差用于目标饱和与渐进跟随，数值超限不锁存故障。false 为旧的硬拦截模式 |
 | `joints[].verified`, `kind` | 关节校准已验证；kind 为实际 arm/wrist/finger，不虚构 palm 关节 |
 | `simulated` | 合成测试 profile 标志；true 永远不能用于真实 execute |
 
 只要求本次选定侧/部位的硬件映射齐全，未选择的另一侧可继续保留未验证。每个已选择组都必须具备完整 SDK 槽位限位，即使此次只控制一个肩关节。未提供的电流、逐电机错误、bus/state 使用 None；如果要求相应安全策略，直接拒绝，不能填零绕过。velocity 缺失时反馈速度检查仍拒绝控制；effort 缺失保留 None。
 
-指令限速与实测速度阈值分开，避免将位置指令的 `max_velocity: 0.3` 直接当作
+Aurora 默认 `smooth_limits: true`（`robot_aurora.yaml` 已显式启用），双侧手臂、
+手部和完整 SDK 槽位均使用平滑约束。超范围目标收回边界，指令变化受速度和步长限制，
+目标相对反馈的超前量受跟踪误差限制；启动位置越界时逐步回到范围内，反馈突变也不跳变指令。
+数值超限不再使连接或控制退出。未映射槽位正常保持原目标；需要回收越界/过大跟踪差时，
+使用该组已配置的最小速度与步长逐步调整。有限轨迹会延长过短的执行时间；跟踪目标长期无进展
+返回 `submitted=false, arrived=false`，不锁存限位故障，调用者仍可继续发送新目标。
+无效配置、NaN/Inf、反馈缺失/断流、设备故障和 FSM/控制权校验仍独立生效。
+
+旧的 `smooth_limits: false` 模式中，指令限速与实测速度阈值分开，避免将位置指令的 `max_velocity: 0.3` 直接当作
 电机实测速度的硬上限。GR3 两侧手臂默认反馈上限来自
 [官方 GR3 参数](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/robot_specs/)：
 肩 pitch/roll 7.75、肩 yaw/肘 pitch/腕 yaw 6.28、腕 pitch/roll 9.2153 rad/s。
-这些值只提供反馈超速检查上限；profile 的指令速度、步长、位置和跟踪误差限制仍分别生效。
-现场可用 `max_feedback_velocity` 配置更低的报警阈值。
+这些值在旧模式中提供反馈超速检查上限；平滑模式不因实测超速终止。
+`max_velocity` 与 `max_position_step` 始终约束指令变化，不会因反馈超速而提高发送速度。
 
 ### 正常运行配置的官方限位核对
 
@@ -205,7 +214,7 @@ python tools/aurora_control.py move --side left --direction forward --angle-deg 
 python tools/aurora_control.py joint --side right --joint elbow_flexion --angle-deg 10
 ```
 
-输出 side/group/joint/index、SDK/语义当前值、请求值、限幅值、SDK 目标、完整组前后向量、FSM 和阻止执行的原因。未取得真实反馈时 current/before/after/FSM 为 null；未校准转换时 SDK target 为 null，不伪造当前零位。限幅值只是诊断，实际 execute 遇到超限会拒绝原请求。
+输出 side/group/joint/index、SDK/语义当前值、请求值、限幅值、SDK 目标、完整组前后向量、FSM 和阻止执行的原因。未取得真实反馈时 current/before/after/FSM 为 null；未校准转换时 SDK target 为 null。默认平滑模式向限幅后的目标逐步执行，旧的硬拦截模式才拒绝超范围请求。
 
 无需 SDK 的合成反馈 preview 与有界 fake 轨迹：
 
@@ -264,7 +273,7 @@ motion.move_joints({"left.elbow_flexion": 0.03, "right.elbow_flexion": 0.04}, du
 
 同组多目标先合并；双组先全部验证，再一次 `set_group_cmd(position_cmd={...})` 提交。**不保证硬件原子同步**。同一进程的真实 factory/AuroraSession.real 复用同配置客户端，拒绝冲突配置、重叠组 owner、第二个命令线程。关闭单侧不会关闭仍被另一侧引用的会话，最后引用才 client.close。SDK 关闭后保留其私有单例，本项目不修改 `_instance`；后续真实连接必须重启进程，不能自动复用关闭的 client。只读检查已有 `_instance` 可拒绝接管其他库建立的客户端，不写这个字段。
 
-轨迹为 cubic smoothstep；swing 为有界 raised-cosine 往复，显式平滑进入下端点并最后回到中心，不回机器人全局零位。duration、period、cycles、幅度等拒绝 NaN/Inf/非法范围；周期至少有 20 个控制点，cycles 1–1000，摆动主体不超过 3600 秒。entry/exit 各使用 `settle_duration_s`。时钟为 monotonic，每步经过安全层，调度过晚失败退出，不按延迟放大步长。被安全层限幅的手动轨迹直接报告未完成，不冒称完整完成原请求。
+显式 duration 的轨迹为 cubic smoothstep；swing 为有界 raised-cosine 往复，平滑进入下端点并最后回到中心。默认平滑模式裁剪超范围端点，按速度/步长延长过短的 duration/period；调度延迟时继续分步推进，不放大单步。目标仍在等待跟踪反馈时不冒称到位。duration、period、cycles、幅度仍须有限且合法；旧模式保留超限/调度延迟拒绝行为。
 
 ## 完整组更新和反馈时效
 
@@ -322,7 +331,7 @@ model control 的 `aurora-fake` 使用 GR3 布局、FSM 2 和模拟 stable_level
 
 预留 `set_hand_joint(side, joint, position)` / `set_hand_joints(side, targets)`，复用相同 session、owner 和组安全检查。没有 hand profile 时必定拒绝；`hand-joints` CLI 当前只在 preview 显示 unsupported，execute 拒绝。没有假定五指、六电机或任何固定手指顺序，也没有整手闭合度标定。具名物理腕关节只有 profile 真有映射/能力才可用；不提供虚构 palm 或 IK。
 
-局部数据/限位/跟踪故障锁存当前 view/组，不给另一侧发送命令；FSM、SDK 异常和 SDK ERROR 日志故障锁存整个共享会话。SDK 日志处理只置线程安全事件，不在回调里操作客户端。故障组不能自动重新加入存活会话，必须排查后重启并重新确认。
+局部无效数据故障锁存当前 view/组；默认平滑模式的数值限位/跟踪偏差不锁存故障。FSM、SDK 异常和 SDK ERROR 日志故障锁存整个共享会话。SDK 日志处理只置线程安全事件，不在回调里操作客户端。故障组不能自动重新加入存活会话，必须排查后重启并重新确认。
 
 `disable()` 立即禁止本应用新目标；`close()` 幂等关闭自有引用/最终客户端。默认不回零、不恢复初始姿态、不发送全零或“安全保持”、不切全局 FSM。**关闭 AuroraClient ≠ 硬件急停；停止发布 ≠ 机器人已物理停止。** 0.1.8 没有 lease API，也没有在退出时虚构 lease release。硬件急停和机器人端超时/停止行为必须由现场独立安全手段保障。
 

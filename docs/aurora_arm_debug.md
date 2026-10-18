@@ -66,7 +66,7 @@ python tools/aurora_sdk_doctor.py --connect --domain-id 123
 | 5 / 6 | 肘屈曲正 / 负角度 |
 
 角度支持小数和全角数字，只输入数值，不输入“度”。空角度取消本次操作；
-非法数值会提示重新输入。位置超限仍由 profile 拒绝，不会因选择菜单而绕过。
+非法数值会提示重新输入。默认平滑模式把超范围位置目标收回 profile 的边界，并逐步执行。
 这里的“侧摆”是到达指定外展角度，不是自动往复摆动。
 这是单关节动作，其他关节保持，不会自动复位上一个动作涉及的不同关节。
 
@@ -104,20 +104,22 @@ python tools/aurora_arm_debug.py --backend fake --simulate --action 1 --angle-de
 正常运行配置 `robot_aurora.yaml` 和 `aurora_196_shoulder.yaml` 已采用官方速度上限：
 肩前屈/外展 7.75 rad/s，上臂旋转/肘屈曲 6.28 rad/s。100 Hz 下的步长分别为
 0.0775 和 0.0628 rad，避免原来 0.01 rad 的步长再次压低速度。
-位置超限直接拒绝，预览中的限幅值仅用于诊断；仍检查反馈、跟踪误差和到位超时。
+默认 `smooth_limits: true`：位置超限收回到边界，跟踪误差限制目标超前量，
+速度与步长限制每次变化；启动位置越界逐步回收，不因这些数值超限退出。
+若跟踪目标长期无进展，报告尚未到位并返回菜单。断流、无效数据和到位超时仍独立处理。
 
 `max_velocity` 限制指令位置的变化速度，实测反馈用独立的
-`max_feedback_velocity` 判断超速。GR3 手臂未填写该项时，按
+`max_feedback_velocity` 在旧的 `smooth_limits: false` 模式中判断超速。GR3 手臂未填写该项时，按
 [官方关节参数](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/robot_specs/)
 使用对应关节上限：肩前屈/外展 7.75、上臂旋转/肘屈曲/腕 yaw 6.28、腕 pitch/roll
 9.2153 rad/s；也可在关节 `limits` 中设置更低的 `max_feedback_velocity`，但不能低于
 指令 `max_velocity`。例如 `max_velocity: 0.3`、`max_feedback_velocity: 0.6`
-分别表示指令最多 0.3 rad/s、实测超过 0.6 rad/s 报错。非 GR3 手臂未填写时沿用
+分别表示指令最多 0.3 rad/s、旧模式下实测超过 0.6 rad/s 报错。非 GR3 手臂未填写时沿用
 `max_velocity` 作为反馈上限。
 
 原来 `velocity exceeds max_velocity` 报错把指令限速也当作实测速度阈值；按限速运行时，
-反馈超过 0.3 rad/s 就会终止。现在会打印实测速度、反馈上限和指令限速，且启动时的
-`velocity_limits_rad_s` 会显示实际生效的两个值。反馈阈值不会提高指令发送速度。
+反馈超过 0.3 rad/s 就会终止。现在默认平滑模式不因实测速度超限终止；启动时的
+`smooth_limits` 与 `velocity_limits_rad_s` 分别显示策略和配置值。指令限速始终生效。
 `DDSInterface closed` 是随后清理客户端的日志，不是这个超速错误的原因。
 
 官方 [MoveCommand 示例](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/examples/move_command_example/)

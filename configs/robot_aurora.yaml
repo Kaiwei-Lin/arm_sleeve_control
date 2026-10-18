@@ -19,6 +19,8 @@ connection:
 allowed_fsm:
 - 2
 control_hz: 100.0
+# Position/speed/step/tracking limits shape commands instead of aborting control.
+smooth_limits: true
 feedback_timeout_s: 0.25
 endpoint_timeout_s: 5.0
 arrival_timeout_s: 3.0
