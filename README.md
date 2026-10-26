@@ -39,6 +39,21 @@ python tools/aurora_arm_debug.py --backend fake --simulate
 默认角度相对标定零位，`--reference current` 改为当前姿态增量。
 真实连接、profile 和反馈结果说明见 [数字菜单手臂 SDK 调试](docs/aurora_arm_debug.md)。
 
+最简 SDK 连接与抬臂测试（无需 IMU、袖套或手套，在安装了 Aurora SDK 的 Linux/WSL 环境运行）：
+
+```bash
+python tools/test_aurora_connection.py
+```
+
+脚本使用 `UDPv4`、`domain_id=123`、`robot_name="gr3"`，直接调用 SDK。
+第一次回车切换到 PdStand（FSM 2），最多等待 5 秒确认 `stable_level > 100`；
+第二次回车让双臂从当前姿态平滑前抬 30°，约 3 秒完成指令发送。
+只改变两臂的肩部 pitch（index 0，按当前 GR3 标定沿 SDK 负方向移动），其余关节保持当前位置。
+脚本检查位置向量、肩部限位和站立状态，不切换到行走 FSM，不发送速度指令。
+结束或异常时关闭客户端，不自动放下手臂；关闭客户端不等于硬件急停。
+末尾打印 SDK 缓存中的肩部反馈，不代表已经验证反馈新鲜度或实际到位，需现场观察动作。
+接口与站立条件见 [官方 PdStand 说明](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/controller_reference/pd_stand_state/)。
+
 ## 项目当前阶段
 
 Phase 1 原有三个机械臂关节的位置控制与 PVCT 读取现已扩展加入大臂旋转电机。Phase 2 新增袖套、IMU、时间同步和数据记录。Phase 3/4 已接入 CH2 肘部规则、可切换的双 IMU/三柔性肩部方向与幅度估计，以及可选的 IMU3/4 大臂旋转；四个语义关节经同一个 Mapper、SafetyController 和 Robot command owner 下发。
