@@ -68,7 +68,7 @@ def parse_args(argv=None):
         help="include available IMU quaternions in 1 Hz telemetry",
     )
     parser.add_argument("--prepare-aurora-fsm", action="store_true",
-                        help="explicitly prepare PdStand after interactive confirmation")
+                        help="prepare the first allowed_fsm from --aurora-profile after interactive confirmation")
     args = parser.parse_args(argv)
     if args.sleeve == "none" and not args.print_only and args.robot not in ("aurora", "aurora-fake"):
         parser.error("--sleeve none requires --robot aurora/aurora-fake or --print-only")

@@ -112,7 +112,7 @@ def run_command(args, profile, group, command, controller):
     target = (preview["clamped_target"] if profile.smooth_limits else preview["requested_semantic_position"])
     print(f"执行目标：{command.side} / {command.joint} → {math.degrees(target):.3f}°，按 profile 允许的最大速度运行")
 
-    # --execute authorizes motion; still check PdStand/stance without changing FSM.
+    # --execute authorizes motion; still check the configured FSM without changing it.
     robot.prepare_control_mode(operator_confirmed=True)
     key = robot.joint_key(command.side, command.joint)
     controller.enable()

@@ -16,7 +16,7 @@ streaming 控制层，不依赖袖套/IMU。运行方式与角度定义见
 
 | 路径 | API | 适用场景 / 状态 |
 | --- | --- | --- |
-| Streaming | `get_group_state` + `set_group_cmd` | 每个新 sensor sample 更新目标，在样本仍新鲜时按控制周期推进；当前站立遥操作使用 PdStand/FSM 2，`stable_level > 100` |
+| Streaming | `get_group_state` + `set_group_cmd` | 每个新 sensor sample 更新目标，在样本仍新鲜时按控制周期推进；模型控制默认 UpperBodyUserCmd/FSM 11，由 profile 的 `allowed_fsm` 第一项选择 |
 | Discrete motion | `MoveCommandManager` + `set_move_command`，必要时 `wait_groups_motion_complete` | 固定姿态、离散动作；官方示例为全身 FSM 3 / 上身 FSM 4 |
 
 MoveCommand 提供自身轨迹规划、速度规划和完成跟踪。实时 IMU 循环每帧重启
@@ -25,12 +25,14 @@ MoveCommand 提供自身轨迹规划、速度规划和完成跟踪。实时 IMU 
 不是 MoveCommand API；本次未增加新的离散 MoveCommand 工具。
 
 `RobotRuntime.prepare()` 在真实执行前要求准确输入 `YES`，随后由
-`AuroraRobotArm.prepare_control_mode()` 检查全身 FSM 和站立稳定度。
+`AuroraRobotArm.prepare_control_mode()` 检查全身 FSM。
+`configs/robot_aurora.yaml` 的 `allowed_fsm: [11]` 是默认上肢模式；第一项作为
+启动检查、显式切换及运行中检查的目标，支持 `11`（UpperBodyUserCmd）和 `2`（PdStand）。
 默认不切换 FSM；显式 `--prepare-aurora-fsm --execute` 才允许在确认后调用
-`set_fsm_state(2)`，并有界等待 FSM 2 和稳定度超过 profile 阈值。
+`set_fsm_state(目标值)`，并有界等待实际 FSM 到达目标。
+只有选择 FSM 2 时才要求站立稳定度超过 profile 阈值；FSM 11 不读取站立稳定度。
 准备失败不发送 group command。enable、反馈健康检查和每次发送前重新检查。
-不调用 `set_upper_fsm_state`，不自动进入 UserCmd/FSM 10 或 Upper UserCmd/FSM 11；
-后者会令下肢进入零扭矩，不能作为普通站立遥操作默认值。
+不调用 `set_upper_fsm_state`。FSM 11 会令下肢进入零扭矩，使用时保持悬挂支撑。
 
 ## 安装与版本依据
 
@@ -53,7 +55,7 @@ python tools/aurora_sdk_doctor.py
 | `AuroraClient.get_instance(domain_id, participant_qos=None, robot_name=None, namespace=None, is_ros_compatible=None)` | domain 必填。配置支持 domain、robot_name、namespace、ROS 命名；不猜网络字段。初始化失败有时记录日志并返回 None，adapter 明确拒绝 |
 | `client.get_fsm_state()` / `get_upper_fsm_state()` | 返回整数 FSM；可能 KeyError；每次命令前重新检查允许模式 |
 | `client.get_stand_pose()` | `[delta_z, delta_pitch, delta_yaw, stable_level]`，PdStand 要求第四项严格超过阈值，默认 100 |
-| `client.set_fsm_state(2)` | 仅显式 prepare 选项且操作员确认后使用；随后等待状态和稳定度 |
+| `client.set_fsm_state(目标值)` | 目标取 profile 的 `allowed_fsm` 第一项；仅显式 prepare 选项且操作员确认后使用，FSM 2 额外等待站立稳定度 |
 | `client.get_group_state(group_name, key='position')` | 返回缓存的 **list[float]**；key 为 position/velocity/effort。不存在组/key 时 KeyError。没有 timestamp 或 SDK OperationResult |
 | `client.set_group_cmd(position_cmd, velocity_cmd=None, torque_cmd=None)` | `dict[str, list[float]]`：组名映射完整向量。本项目只提供 position_cmd，不发送速度、力矩或增益命令 |
 | `client.close()` | 返回 None，关闭本应用客户端，不是 Servo Off/急停。SDK 单例没有公开 reset 接口 |
@@ -108,7 +110,7 @@ namespace/ROS 命名可用原 doctor 的 `--namespace`、`--ros-compatible` / `-
 cp configs/robot_aurora.yaml configs/aurora.site.yaml
 ```
 
-`configs/robot_aurora.yaml` 是当前 GR3 正常运行配置：domain 123、robot_name gr3、原生 DDS、FSM 2、左右 manipulator 的 7DoF 布局、官方 SDK 位置和速度上限。现场已有的 `verified`、组/关节验证、authority、sign/zero 记录由现有配置保留，本次参数核对不代表新的真机标定。全空未验证模板为 `configs/aurora.unverified.yaml`，旧 schema 兼容。结构使用 `groups` 列表，每个条目明确 side/part；字段对应关系如下：
+`configs/robot_aurora.yaml` 是当前 GR3 正常运行配置：domain 123、robot_name gr3、原生 DDS、FSM 11、左右 manipulator 的 7DoF 布局、官方 SDK 位置和速度上限。现场已有的 `verified`、组/关节验证、authority、sign/zero 记录由现有配置保留，本次参数核对不代表新的真机标定。全空未验证模板为 `configs/aurora.unverified.yaml`，旧 schema 兼容。结构使用 `groups` 列表，每个条目明确 side/part；字段对应关系如下：
 
 | 字段 | 意义 / 必须确认的内容 |
 |---|---|
@@ -118,7 +120,7 @@ cp configs/robot_aurora.yaml configs/aurora.site.yaml
 | `connection.namespace`, `is_ros_compatible` | 实际端点命名；null 的 ROS 选项保留 SDK 读取现有环境的行为 |
 | `robot_type`, `verification_note` | 现场核实的型号、依据/日期等。SDK 本身无法自动验证型号，需要设备记录补证 |
 | `verified`, `authority_verified` | 显式确认硬件参数及本应用可独占所选组；不是通过软件猜测出来的能力 |
-| `allowed_fsm` | GR3 站立 streaming 为 `[2]`；不自动选择 10/11 |
+| `allowed_fsm` | 模型控制默认为 `[11]`；第一项选择 streaming 目标，站立模式可设为 `[2]`；运行中不回退到其他条目 |
 | `control_hz` | 应用控制频率 1–500 Hz，GR3 模板为 100 Hz |
 | `minimum_stable_level`, `stable_wait_seconds` | 默认 100、3 秒；稳定度必须严格大于阈值 |
 | `allow_missing_velocity_cmd` | 仅允许已证明的唯一 velocity_cmd publisher mismatch |
@@ -323,7 +325,7 @@ python tools/run_model_control.py --robot aurora --arm-side right --source-side 
 
 保持原单一控制线程、sensor watchdog、预测错误/IMU 错误处理和 finally 退出；传感器不调用 SDK。Aurora 传感器超时/预测错误立即阻止写入并关闭本应用。DyMotor 原 connect 仍会执行厂家 Servo On 等启动步骤，不能把所有 backend 的“无 execute”统称为无动作。
 
-model control 的 `aurora-fake` 使用 GR3 布局、FSM 2 和模拟 stable_level=101。
+model control 的 `aurora-fake` 使用 GR3 布局及 `configs/robot_aurora.yaml` 的首个 FSM，当前为 11。
 通用单元测试/手动 CLI 的 `fake_session()` 仍保留上述 FSM 42 的合成夹具，
 用于验证非零 zero、不同 sign 和未映射槽位，不能作为实机 profile。
 

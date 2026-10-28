@@ -160,11 +160,13 @@ Discrete motion uses `MoveCommandManager` + `set_move_command` and optional
 upper-body FSM 4. Its planning/completion behavior would block or repeatedly
 restart trajectories in continuous sensor following.
 
-Standing streaming uses PdStand (FSM 2), with `get_stand_pose()[3] > 100`.
-No default FSM change. An explicit preparation option requires interactive
-operator confirmation, sends FSM 2 only, and waits for FSM and stability.
-FSM 10/11 are not standing defaults: Upper UserCmd places lower limbs in zero
-torque. All FSM logic remains in the robot layer.
+Model streaming selects the first `allowed_fsm` in the Aurora profile, defaulting
+to UpperBodyUserCmd (FSM 11) in `configs/robot_aurora.yaml`. This mode requires
+suspension support because lower limbs use zero torque; it does not check stance.
+Selecting PdStand (FSM 2) retains the `get_stand_pose()[3] > 100` check.
+No default FSM change. Explicit preparation requires interactive operator
+confirmation, sends the selected FSM, and waits for matching feedback (plus
+stance for FSM 2). The selected FSM remains required throughout streaming.
 
 ## Ground truth
 

@@ -132,7 +132,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
 
 @pytest.mark.parametrize("damage", ["fsm", "unstable", "sdk", "tracking"])
 def test_sdk_fsm_and_feedback_failures_are_not_reported_as_success(monkeypatch, capsys, damage):
-    session = injected_session(monkeypatch)
+    session = injected_session(monkeypatch, profile=replace(tool.gr3_fake_profile(), allowed_fsm=(2,)))
     client = session.fake_client
     if damage == "fsm":
         client.fsm = 10

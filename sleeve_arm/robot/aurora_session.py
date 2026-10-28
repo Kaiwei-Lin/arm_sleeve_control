@@ -90,7 +90,7 @@ class AuroraSession:
         self._lock = threading.RLock()
         self._errors = _SdkErrors()
         self._loggers = []
-        self._pdstand_required = False
+        self._required_fsm = None
 
     @classmethod
     def real(cls, profile, *, execute=False, operator_confirmed=False):
@@ -263,8 +263,8 @@ class AuroraSession:
     def _check_fsm(self):
         fsm = self._call('get_fsm_state')
         if (type(fsm) is not int or fsm not in self.profile.allowed_fsm
-                or (self._pdstand_required and fsm != 2)):
-            self.fault = f'FSM {fsm} is not in verified allowed_fsm'
+                or (self._required_fsm is not None and fsm != self._required_fsm)):
+            self.fault = f'FSM {fsm} is not in verified allowed_fsm or differs from required FSM {self._required_fsm}'
             raise RobotError(self.fault)
         if fsm == 2:
             self._check_stand_pose()
@@ -279,8 +279,16 @@ class AuroraSession:
         if pose[3] <= self.profile.minimum_stable_level:
             raise RobotError(f'PdStand is not in stance stage: stable_level={pose[3]} must exceed {self.profile.minimum_stable_level}')
 
+    @property
+    def control_fsm(self):
+        """The first allowed FSM selects the streaming mode; never auto-fallback."""
+        fsm = self.profile.allowed_fsm[0] if self.profile.allowed_fsm else None
+        if fsm not in (2, 11):
+            raise RobotError('streaming requires first profile.allowed_fsm to be 2 (PdStand) or 11 (UpperBodyUserCmd)')
+        return fsm
+
     def prepare_control_mode(self, *, prepare_fsm=False, operator_confirmed=False):
-        """Standing streaming only: never switch to UserCmd/Upper UserCmd.
+        """Prepare the configured streaming FSM, checking stance only for PdStand.
 
         No MoveCommandManager here: sensor following uses immediate full-group
         commands with application rate/step limits, without trajectory waits.
@@ -288,28 +296,29 @@ class AuroraSession:
         self._check_fault()
         if not self.execute or not operator_confirmed:
             raise RobotError('control preparation requires execute and explicit operator confirmation')
-        if 2 not in self.profile.allowed_fsm:
-            raise RobotError('standing streaming requires PdStand FSM 2 in profile.allowed_fsm')
-        self._pdstand_required = True
+        target_fsm = self.control_fsm
+        mode = 'PdStand' if target_fsm == 2 else 'UpperBodyUserCmd'
+        self._required_fsm = target_fsm
         self.operator_confirmed = True
         if prepare_fsm:
-            self._call('set_fsm_state', 2)
+            self._call('set_fsm_state', target_fsm)
         deadline = self.clock.monotonic() + self.profile.stable_wait_seconds
         while True:
             fsm = self._call('get_fsm_state')
             if type(fsm) is not int:
                 raise RobotError('invalid FSM feedback')
-            if fsm == 2:
+            if fsm == target_fsm:
                 try:
-                    self._check_stand_pose()
+                    if target_fsm == 2:
+                        self._check_stand_pose()
                     return
                 except RobotError:
                     if self.clock.monotonic() >= deadline:
                         raise
             elif not prepare_fsm:
-                raise RobotError(f'standing streaming requires PdStand FSM 2; observed {fsm}; no FSM change requested')
+                raise RobotError(f'streaming requires {mode} FSM {target_fsm}; observed {fsm}; no FSM change requested')
             if self.clock.monotonic() >= deadline:
-                raise RobotError('timed out waiting for PdStand FSM 2 and stance stage')
+                raise RobotError(f'timed out waiting for {mode} FSM {target_fsm}; observed {fsm}')
             self.clock.sleep(min(0.05, max(0.0, deadline - self.clock.monotonic())))
 
     def enable(self, token):

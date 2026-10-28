@@ -92,7 +92,7 @@ python tools/debug_glove.py --side right --execute --duration 30
 ```
 
 `--side left` 选择左手。直接运行 Python 时默认只下发所选
-`left_hand` / `right_hand`，不会抬臂；默认要求机器人已处于可控制的 PdStand。
+`left_hand` / `right_hand`，不会抬臂；要求机器人处于 profile 的 `allowed_fsm` 第一项，当前默认 FSM 11。
 只有显式添加 `--prepare-aurora-fsm` 才请求原有 FSM 准备流程。
 
 手掌被大腿挡住时，可以同时让同侧肩部前抬到相对零位的 **45°**：

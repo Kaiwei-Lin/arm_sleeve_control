@@ -53,6 +53,7 @@ def test_control_script_runtime_uses_official_speed_for_all_controlled_joints(mo
     assert used_sudo
     args = parse_args(argv)
     profile = load_aurora_profile(args.aurora_profile)
+    assert profile.allowed_fsm == (11,)
     session = fake_session(profile=replace(profile, simulated=True, allow_missing_velocity_cmd=False))
     actual_factory = factory.create_robot
     monkeypatch.setattr(factory, "create_robot",
@@ -62,6 +63,8 @@ def test_control_script_runtime_uses_official_speed_for_all_controlled_joints(mo
     runtime.connect()
     try:
         assert runtime.prepare() and runtime.stream_between_samples
+        assert session.client.fsm == 11
+        assert "get_stand_pose" not in session.client.calls
         period = 1. / runtime.configs.phase3.control_hz
         assert period == profile.control_period_s == .01
         intent = MotionIntent(timestamp=session.clock.monotonic(), shoulder_flexion_rad=.5,
@@ -229,5 +232,8 @@ def test_runtime_owns_confirmation_and_fsm_preparation_with_injected_robot(monke
         assert runtime.prepare() is (answer == "YES")
         assert ("set_fsm_state" in session.client.calls) is (answer == "YES")
         assert bool(session.client.commands) is (answer == "YES")
+        if answer == "YES":
+            assert session.client.fsm == 11
+            assert "get_stand_pose" not in session.client.calls
     finally:
         runtime.shutdown()

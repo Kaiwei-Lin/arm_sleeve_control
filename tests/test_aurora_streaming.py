@@ -13,8 +13,8 @@ from sleeve_arm.robot.aurora_session import _SdkErrors
 from sleeve_arm.robot.base import RobotError
 
 
-def connected(side="right", profile=None):
-    session = fake_session(profile=profile or gr3_fake_profile())
+def connected(side="right", profile=None, *, fsm=2):
+    session = fake_session(profile=profile or replace(gr3_fake_profile(), allowed_fsm=(fsm,)))
     robot = AuroraRobotArm(session, sides=(side,))
     controller = SafeArmController(robot, robot.config, clock=session.clock)
     controller.connect()
@@ -22,10 +22,11 @@ def connected(side="right", profile=None):
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("fsm", [2, 11])
 @pytest.mark.parametrize("joint,index", [("shoulder_flexion", 0), ("elbow_flexion", 3),
                                        ("shoulder_abduction", 1), ("upper_arm_rotation", 2)])
-def test_gr3_routing_complete_vector_and_uncontrolled_joints(side, joint, index):
-    session, robot, controller = connected(side)
+def test_gr3_routing_complete_vector_and_uncontrolled_joints(side, joint, index, fsm):
+    session, robot, controller = connected(side, fsm=fsm)
     try:
         robot.prepare_control_mode(operator_confirmed=True)
         controller.enable()
@@ -108,8 +109,9 @@ def test_explicit_prepare_requires_confirmation_and_waits_for_stance(monkeypatch
         controller.shutdown()
 
 
-def test_explicit_prepare_timeout_never_enables_or_sends(monkeypatch):
-    session, robot, controller = connected()
+@pytest.mark.parametrize("fsm", [2, 11])
+def test_explicit_prepare_timeout_never_enables_or_sends(monkeypatch, fsm):
+    session, robot, controller = connected(fsm=fsm)
     try:
         session.client.fsm = 0
         requests = []
@@ -117,9 +119,61 @@ def test_explicit_prepare_timeout_never_enables_or_sends(monkeypatch):
         began = session.clock.now
         with pytest.raises(RobotError, match="timed out"):
             robot.prepare_control_mode(prepare_fsm=True, operator_confirmed=True)
-        assert requests == [2]
+        assert requests == [fsm]
         assert session.clock.now - began == pytest.approx(session.profile.stable_wait_seconds)
         assert not controller.enabled and not session.client.commands
+    finally:
+        controller.shutdown()
+
+
+def test_upper_body_preparation_waits_for_fsm_without_standing_feedback(monkeypatch):
+    session, robot, controller = connected(fsm=11)
+    try:
+        session.client.fsm = 0
+        with pytest.raises(RobotError, match="confirmation"):
+            robot.prepare_control_mode(prepare_fsm=True)
+        assert "set_fsm_state" not in session.client.calls
+        began = session.clock.now
+        requests = []
+        monkeypatch.setattr(session.client, "set_fsm_state", requests.append)
+        monkeypatch.setattr(session.client, "get_fsm_state", lambda: 11 if session.clock.now - began > .1 else 0)
+        monkeypatch.setattr(session.client, "get_stand_pose", lambda: pytest.fail("upper-body mode must not query stance"))
+        robot.prepare_control_mode(prepare_fsm=True, operator_confirmed=True)
+        assert requests == [11] and session.clock.now - began > .1
+        assert not session.client.commands
+        controller.enable()
+        session.clock.sleep(.01)
+        controller.set_joint_positions({"shoulder_flexion": .001}, dt=.01)
+        assert session.client.commands
+    finally:
+        controller.shutdown()
+
+
+@pytest.mark.parametrize("fsm", [0, 2, 3, 10])
+def test_upper_body_mode_rejects_other_initial_states_without_switching(fsm):
+    session, robot, controller = connected(fsm=11)
+    try:
+        session.client.fsm = fsm
+        with pytest.raises(RobotError, match="UpperBodyUserCmd FSM 11"):
+            robot.prepare_control_mode(operator_confirmed=True)
+        assert not session.client.commands and "set_fsm_state" not in session.client.calls
+    finally:
+        controller.shutdown()
+
+
+def test_upper_body_mode_remains_required_even_if_another_fsm_is_allowed():
+    session, robot, controller = connected(profile=replace(gr3_fake_profile(), allowed_fsm=(11, 2)))
+    try:
+        robot.prepare_control_mode(operator_confirmed=True)
+        controller.enable()
+        session.clock.sleep(.01)
+        controller.set_joint_positions({"shoulder_flexion": .001}, dt=.01)
+        sent = len(session.client.commands)
+        session.client.fsm = 2
+        session.clock.sleep(.01)
+        with pytest.raises(Exception, match="required FSM 11"):
+            controller.set_joint_positions({"shoulder_flexion": .002}, dt=.01)
+        assert controller.fault and len(session.client.commands) == sent
     finally:
         controller.shutdown()
 

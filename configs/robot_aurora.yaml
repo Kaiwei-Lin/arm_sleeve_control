@@ -16,8 +16,9 @@ connection:
   domain_id: 123
   robot_name: gr3
   is_ros_compatible: false
+# First entry selects the model-control FSM: 11 = UpperBodyUserCmd, 2 = PdStand.
 allowed_fsm:
-- 2
+- 11
 control_hz: 100.0
 # Position/speed/step/tracking limits shape commands instead of aborting control.
 smooth_limits: true

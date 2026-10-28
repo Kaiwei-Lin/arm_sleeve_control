@@ -76,9 +76,11 @@ class RobotRuntime:
             self.print("DRY RUN: vendor startup used Servo On; no post-startup model target is sent.")
             return True
         if self.is_aurora:
+            fsm = self.robot.session.control_fsm
             if self.backend == "aurora":
                 self.print(f"Aurora semantic startup positions: {self.startup}")
-                action = "prepare PdStand FSM 2 and enable streaming" if self.args.prepare_aurora_fsm else "enable streaming in current PdStand"
+                action = (f"prepare configured FSM {fsm} and enable streaming" if self.args.prepare_aurora_fsm
+                          else f"enable streaming in current FSM {fsm}")
                 if (self.input_fn or input)(f"Type YES to {action}: ") != "YES":
                     self.print("Cancelled: NO MOTION")
                     return False

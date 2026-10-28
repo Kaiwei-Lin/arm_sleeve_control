@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compose the sensor, intent and robot runtimes for model control."""
+"""Compose model control; Aurora targets the profile's first allowed_fsm."""
 from __future__ import annotations
 
 import sys
