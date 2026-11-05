@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single Bend5 glove control with optional forward arm pose; no Sleeve/IMU required."""
+"""Single Bend5/Bend6 glove control with optional forward arm pose; no Sleeve/IMU required."""
 from __future__ import annotations
 
 import argparse
@@ -30,6 +30,8 @@ def parse_args(argv=None):
                         help="minimum duration of the smooth arm lift (default: 5 seconds)")
     parser.add_argument("--prepare-aurora-fsm", action="store_true")
     parser.add_argument("--duration", type=float)
+    parser.add_argument("--diagnose-serial", action="store_true",
+                        help="Bend6 only: monitor serial bytes/parser errors through stale periods; never connect a robot")
     parser.set_defaults(library=None, bridge_diagnostics=False, source_side=None)
     args = parser.parse_args(argv)
     if args.duration is not None and (not math.isfinite(args.duration) or args.duration <= 0):
@@ -44,7 +46,35 @@ def parse_args(argv=None):
         parser.error("--arm-forward-deg must be nonnegative and finite")
     if not math.isfinite(args.arm_move_seconds) or args.arm_move_seconds <= 0:
         parser.error("--arm-move-seconds must be positive and finite")
+    if args.diagnose_serial and (args.execute or args.robot != "aurora" or args.glove != "real"
+                                or args.arm_forward_deg or args.prepare_aurora_fsm):
+        parser.error("--diagnose-serial requires --glove real with no execute, fake robot or arm movement")
     return args
+
+
+def diagnose_serial(glove, duration):
+    """Keep observing stale input without ever creating targets or a robot session."""
+    if glove.config.backend != "bend6" or glove.mode != "real":
+        raise ValueError("--diagnose-serial requires backend=bend6 and --glove real")
+    print(f"Bend6 SERIAL DIAGNOSTICS ONLY: port={glove.config.port} baudrate={glove.config.baudrate} "
+          f"packet_delimiter={glove.config.source_options.get('packet_delimiter', ';')!r}; "
+          "no robot connection, no control targets. Stale data is reported, not used for control.")
+    glove.start()
+    started = time.monotonic()
+    while duration is None or time.monotonic() - started < duration:
+        stats = glove.source.diagnostics()
+        age = stats["valid_age_s"]
+        status = ("WAITING" if age is None else
+                  "STALE" if age > glove.config.stale_timeout_s else "FRESH")
+        for key in ("byte_age_s", "valid_age_s"):
+            if stats[key] is not None:
+                stats[key] = round(stats[key], 3)
+        print(f"[Bend6 serial {status}] {stats}", flush=True)
+        glove.reading  # Propagate acquisition errors after printing the diagnostic snapshot.
+        remaining = .2 if duration is None else duration - (time.monotonic() - started)
+        if remaining > 0:
+            time.sleep(min(.2, remaining))
+    return 0
 
 
 class ForwardArmPose:
@@ -78,9 +108,12 @@ def main(argv=None):
     try:
         config = load_sensor_config(args.sensor_config)
         glove = GloveRuntime(config.glove, mode=args.glove)
+        if args.diagnose_serial:
+            return diagnose_serial(glove, args.duration)
         phase3 = load_phase3_config()
         arm_pose = None
         if args.execute or args.robot == "aurora-fake":
+            glove.validate_for_control()
             configs = ModelControlConfigs(sensors=config, phase3=phase3, glove_mode=args.glove)
             parts = ("arm", "hand") if args.arm_forward_deg else ("hand",)
             robot = RobotRuntime(args, configs, parts=parts)
@@ -89,13 +122,13 @@ def main(argv=None):
                 arm_pose = ForwardArmPose(robot, args)
                 print(f"ARM POSE: {args.side} shoulder forward to {args.arm_forward_deg:g} deg "
                       f"from neutral over at least {args.arm_move_seconds:g}s, then hold during glove control.")
-        print("Bend5: keep fingers straight during startup calibration.")
+        glove.describe_startup()
         if robot is None:
             print("PRINT ONLY: no robot connection; showing glove and target radians.")
             if args.arm_forward_deg:
                 print(f"Requested arm pose: {args.side} forward {args.arm_forward_deg:g} deg (NO MOTION).")
         glove.start()
-        glove.wait_ready()
+        glove.wait_ready(require_control=robot is not None)
         if robot is not None and not robot.prepare(map_arm_intents=False):
             return 0
         period = 1.0 / phase3.control_hz
@@ -111,7 +144,7 @@ def main(argv=None):
             time.sleep(max(0.0, next_tick - time.monotonic()))
             if args.duration is not None and time.monotonic() - started >= args.duration:
                 break
-            targets = glove.targets()
+            targets = glove.targets() if robot is not None else glove.preview_targets()
             if robot is not None:
                 robot.check_health()
                 now = time.monotonic()
@@ -121,7 +154,8 @@ def main(argv=None):
                 previous_tick = now
             if time.monotonic() - last_print >= 0.2:
                 glove.report()
-                print(f"[{args.side}_hand] target_rad={ {k: round(v, 3) for k, v in targets.items()} }")
+                if targets is not None:
+                    print(f"[{args.side}_hand] target_rad={ {k: round(v, 3) for k, v in targets.items()} }")
                 last_print = time.monotonic()
             next_tick += period
         return 0

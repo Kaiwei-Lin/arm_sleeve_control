@@ -21,7 +21,7 @@ def parse_args(argv=None):
                              "Use real to include elbow angles; none requires dual_imu and Aurora or --print-only.")
     parser.add_argument("--imus", choices=("fake", "real"), default="real")
     parser.add_argument("--glove", choices=("none", "real", "fake"),
-                        help="override sensors.glove.enabled; Bend5 controls the selected Aurora hand")
+                        help="override sensors.glove.enabled; YAML backend selects Bend5/Bend6")
     parser.add_argument("--robot", choices=("fake", "dymotor", "aurora", "aurora-fake"), default="dymotor")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--execute", action="store_true")
@@ -129,6 +129,13 @@ def load_configs(args):
         sleeve_mode = "none" if imu_only_supported and backend == "dual_imu" else "real"
     if sleeve_mode == "none" and backend != "dual_imu":
         raise ValueError("--sleeve none requires the dual_imu shoulder predictor; flexarm_estimator needs Sleeve data")
+    if (sleeve_mode == "real" and glove_mode == "real"
+            and sensors.sleeve.port and sensors.glove.port
+            and Path(sensors.sleeve.port).resolve() == Path(sensors.glove.port).resolve()):
+        raise ValueError(
+            f"Sleeve and glove cannot share serial port {sensors.sleeve.port}; "
+            "set distinct sensors.sleeve.port and sensors.glove.port in --sensor-config"
+        )
     if backend == "flexarm_estimator":
         if phase4.flex_model is None:
             raise ValueError("phase4 config does not define predictor.flexarm_estimator")

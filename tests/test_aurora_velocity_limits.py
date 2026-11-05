@@ -36,6 +36,19 @@ def test_normal_profiles_match_official_position_and_velocity_limits(filename):
             assert limits.max_position_step == pytest.approx(limits.max_velocity * profile.control_period_s)
 
 
+def test_right_hand_matches_previous_bridge_slew_and_keeps_feedback_threshold():
+    profile = gr3_fake_profile()
+    assert profile.control_hz == 100.
+    for side, speed, step in (("right", 3., .03), ("left", .8, .02)):
+        group, = profile.selected_groups((side,), ("hand",))
+        assert len(group.joints) == 6
+        for joint in group.joints:
+            assert joint.limits.max_velocity == speed
+            assert joint.limits.max_position_step == step
+            assert joint.limits.max_feedback_velocity == 3.14
+            assert joint.limits.max_velocity <= joint.limits.max_feedback_velocity
+
+
 def slow_command_profile():
     """Keep the original 0.3 rad/s regression independent of site speed settings."""
     profile = replace(gr3_fake_profile(), smooth_limits=False)

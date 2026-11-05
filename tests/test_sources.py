@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import struct
+from collections import deque
+from types import SimpleNamespace
+
+import pytest
 
 import sleeve_arm.sources.fake_imu as fake_imu_module
 import sleeve_arm.sources.fake_sleeve as fake_sleeve_module
@@ -15,6 +19,37 @@ def tlv(data_id: int, values: tuple[int, ...]) -> bytes:
 def test_sleeve_parser_keeps_all_eleven_fields() -> None:
     values = SerialSleeveSource.parse_record(",".join(str(value) for value in range(11)))
     assert values == tuple(float(value) for value in range(11))
+
+
+@pytest.mark.parametrize("payload,valid,invalid,error", [
+    (b"", 0, 0, None),
+    (b"3500;", 0, 1, "expected 11 fields, got 1"),
+    (b"0,0,0,0,3500,0,0,0,0,0,0;", 1, 0, None),
+    (b"nan,0,0,0,3500,0,0,0,0,0,0;", 0, 1, "all sleeve fields must be finite"),
+])
+def test_sleeve_diagnostics_distinguish_silence_bad_records_and_ch5(payload, valid, invalid, error):
+    source = SerialSleeveSource("/dev/ttyUSB_TEST")
+    chunks = deque([payload] if payload else [])
+
+    def read(_count):
+        if chunks:
+            return chunks.popleft()
+        source._stop.set()
+        return b""
+
+    source._serial = SimpleNamespace(in_waiting=len(payload), read=read)
+    source._run()
+    assert source.stats.received_frames == valid
+    assert source.stats.invalid_frames == invalid
+    assert f"received_bytes={len(payload)} " in source.diagnostics
+    assert "port=/dev/ttyUSB_TEST " in source.diagnostics
+    assert "expected_fields=11 " in source.diagnostics
+    assert f"last_parse_error={error!r}" in source.diagnostics
+    frame = source.latest()
+    if valid:
+        assert len(frame.channels) == 11 and frame.channels[4] == 3500.
+    else:
+        assert frame is None
 
 
 def test_imu770_parser_decodes_verified_protocol() -> None:

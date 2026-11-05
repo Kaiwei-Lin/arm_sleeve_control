@@ -177,6 +177,13 @@ class SensorRuntime:
             return self.imu_sources[self.shoulder_names[0]].stats
         return self.source.stats
 
+    def readiness_diagnostics(self):
+        if self.sleeve_mode != "none":
+            return getattr(self.source, "diagnostics", f"Sleeve stats={self.source.stats}")
+        return (f"shoulder_imus={self.shoulder_names} "
+                f"max_sync_ms={self.max_sync_ms(self.config.shoulder_imu)} "
+                f"imu_error={self.imu_error!r}")
+
     def close(self):
         errors = []
         sources = ([self.source] if self.source is not None else []) + list(reversed(tuple(self.imu_sources.values())))

@@ -23,7 +23,7 @@ def test_startup_outside_bounds_and_fast_feedback_recover_without_command_jumps(
     client.groups["right_manipulator"]["position"][1] = -2.1
     client.groups["right_manipulator"]["position"][6] = 1.1  # unmapped wrist slot
     client.groups["right_manipulator"]["velocity"] = [20.] * 7
-    client.groups["right_hand"]["position"][0] = 0.
+    client.groups["right_hand"]["position"][4] = 0.  # thumb_bend on this right-hand profile
     client.groups["right_hand"]["velocity"] = [2.] * 6
     try:
         controller.connect()
@@ -64,16 +64,16 @@ def test_tracking_envelope_waits_then_resumes_and_recovers_gradually():
         for _ in range(30):
             session.clock.sleep(.01)
             applied = controller.set_joint_position("index_flexion", 1.5, .01)
-            assert abs(applied - before) <= .008 + 1e-10
+            assert abs(applied - before) <= .03 + 1e-10
             assert applied <= .21 + 1e-10
             before = applied
         assert applied == pytest.approx(.21)
         assert controller.enabled and not client.closed
-        client.groups["right_hand"]["position"][1] = .21
+        client.groups["right_hand"]["position"][0] = .21
         session.clock.sleep(.01)
-        assert controller.set_joint_position("index_flexion", 1.5, .01) == pytest.approx(.218)
+        assert controller.set_joint_position("index_flexion", 1.5, .01) == pytest.approx(.240)
         # A feedback discontinuity cannot make the command jump to a new envelope.
-        client.groups["right_hand"]["position"][1] = .16
+        client.groups["right_hand"]["position"][0] = .16
         session.clock.sleep(.01)
         assert controller.set_joint_position("index_flexion", 1.5, .01) == pytest.approx(.210)
         assert not controller.fault and not robot.fault
@@ -81,16 +81,18 @@ def test_tracking_envelope_waits_then_resumes_and_recovers_gradually():
         controller.shutdown()
 
 
-def test_direct_backend_commands_also_slew_and_zero_elapsed_time_holds():
+@pytest.mark.parametrize("elapsed,expected", [(.002, .176), (.01, .200), (.1, .200)])
+def test_direct_backend_commands_also_slew_and_zero_elapsed_time_holds(elapsed, expected):
     session, robot, controller = make_controller(parts=("hand",))
     try:
         controller.connect()
         controller.enable()
         robot.set_joint_position("index_flexion", 100.)
-        assert session.fake_client.commands[-1]["right_hand"][1] == pytest.approx(.17)
-        session.clock.sleep(.01)
+        assert session.fake_client.commands[-1]["right_hand"][0] == pytest.approx(.17)
+        session.clock.sleep(elapsed)
         robot.set_joint_position("index_flexion", 100.)
-        assert session.fake_client.commands[-1]["right_hand"][1] == pytest.approx(.178)
+        # Even a delayed cycle cannot exceed one configured step.
+        assert session.fake_client.commands[-1]["right_hand"][0] == pytest.approx(expected)
         assert not robot.fault
     finally:
         controller.shutdown()
@@ -126,7 +128,7 @@ def test_stalled_trajectory_reports_pending_without_latching_a_limit_fault():
         assert not result.submitted and not result.arrived
         assert result.elapsed_s < 5
         assert controller.enabled and not controller.fault and not robot.fault
-        assert session.fake_client.commands[-1]["right_hand"][1] == pytest.approx(.47)
+        assert session.fake_client.commands[-1]["right_hand"][0] == pytest.approx(.47)
     finally:
         controller.shutdown()
 

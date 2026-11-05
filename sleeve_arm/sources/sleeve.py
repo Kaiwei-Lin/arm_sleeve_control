@@ -40,6 +40,8 @@ class SerialSleeveSource(SleeveSource):
         self._pending: deque[SleeveFrame] = deque()
         self._received = 0
         self._invalid = 0
+        self._received_bytes = 0
+        self._last_parse_error: str | None = None
         self._first_timestamp: float | None = None
         self._last_error: BaseException | None = None
         self._lock = threading.Lock()
@@ -108,6 +110,16 @@ class SerialSleeveSource(SleeveSource):
             fps = (self._received - 1) / elapsed if self._received > 1 and elapsed > 0 else 0.0
             return SourceStats(self._received, self._invalid, last, fps)
 
+    @property
+    def diagnostics(self) -> str:
+        with self._lock:
+            return (
+                f"Sleeve port={self.port} baudrate={self.baudrate} "
+                f"received_bytes={self._received_bytes} received_frames={self._received} "
+                f"invalid_frames={self._invalid} expected_fields={self.expected_fields} "
+                f"delimiter={self.delimiter!r} last_parse_error={self._last_parse_error!r}"
+            )
+
     def close(self) -> None:
         self._stop.set()
         serial_port, self._serial = self._serial, None
@@ -126,11 +138,14 @@ class SerialSleeveSource(SleeveSource):
                 if not chunk:
                     continue
                 host_timestamp_ns = time.monotonic_ns()
+                with self._lock:
+                    self._received_bytes += len(chunk)
                 self._buffer.extend(chunk)
                 if len(self._buffer) > 8192:
                     del self._buffer[:-8192]
                     with self._lock:
                         self._invalid += 1
+                        self._last_parse_error = "serial buffer exceeded 8192 bytes; check packet delimiter"
                 while True:
                     index = self._buffer.find(delimiter)
                     if index < 0:
@@ -141,9 +156,10 @@ class SerialSleeveSource(SleeveSource):
                         continue
                     try:
                         channels = self.parse_record(raw.decode("ascii", errors="strict").strip(), self.expected_fields)
-                    except (UnicodeDecodeError, ValueError):
+                    except (UnicodeDecodeError, ValueError) as exc:
                         with self._lock:
                             self._invalid += 1
+                            self._last_parse_error = str(exc)[:200]
                         continue
                     timestamp = host_timestamp_ns / 1_000_000_000.0
                     with self._lock:

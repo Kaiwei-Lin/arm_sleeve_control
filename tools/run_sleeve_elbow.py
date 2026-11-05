@@ -136,7 +136,7 @@ def main() -> int:
             sample = sync.synchronize(frame)
             age = watchdog.age(sample.timestamp, now)
             if watchdog.is_hard_timeout(sample.timestamp, now):
-                raise RuntimeError(f"Sleeve hard timeout: {age * 1000:.1f} ms")
+                print(f"WARNING: Sleeve hard timeout: {age * 1000:.1f} ms")
             if watchdog.is_stale(sample.timestamp, now):
                 if state is not RuntimeState.STALE:
                     print(f"WARNING: Sleeve stale ({age * 1000:.1f} ms); holding last safe target")

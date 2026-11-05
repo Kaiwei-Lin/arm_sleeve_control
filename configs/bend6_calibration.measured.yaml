@@ -1,0 +1,37 @@
+glove:
+  bend6:
+    calibration:
+      mode: normalized
+      channels:
+        little_ip:
+          raw_min: 0.0
+          raw_max: 987.0
+          invert: false
+        little_ring_between:
+          mode: raw
+        ring_ip:
+          raw_min: 0.0
+          raw_max: 1726.0
+          invert: false
+        middle_ip:
+          raw_min: 32.0
+          raw_max: 1403.0
+          invert: false
+        index_middle_between:
+          mode: raw
+        index_mcp:
+          raw_min: 0.0
+          raw_max: 1757.0
+          invert: false
+        index_ip:
+          raw_min: 0.0
+          raw_max: 1687.0
+          invert: false
+        thumb_mcp:
+          raw_min: 213.0
+          raw_max: 1800.0
+          invert: false
+        thumb_tip_joint:
+          raw_min: 131.0
+          raw_max: 704.0
+          invert: false

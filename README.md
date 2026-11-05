@@ -39,20 +39,27 @@ python tools/aurora_arm_debug.py --backend fake --simulate
 默认角度相对标定零位，`--reference current` 改为当前姿态增量。
 真实连接、profile 和反馈结果说明见 [数字菜单手臂 SDK 调试](docs/aurora_arm_debug.md)。
 
-最简 SDK 连接与抬臂测试（无需 IMU、袖套或手套，在安装了 Aurora SDK 的 Linux/WSL 环境运行）：
+最简 SDK 连接与悬挂抬臂测试（无需 IMU、袖套或手套，在安装了 Aurora SDK 的 Linux/WSL 环境运行）：
 
 ```bash
-python tools/test_aurora_connection.py
+env -u LD_LIBRARY_PATH -u PYTHONPATH python tools/test_aurora_connection.py --connect-only
+env -u LD_LIBRARY_PATH -u PYTHONPATH python tools/test_aurora_connection.py
 ```
 
-脚本使用 `UDPv4`、`domain_id=123`、`robot_name="gr3"`，直接调用 SDK。
-第一次回车切换到 PdStand（FSM 2），最多等待 5 秒确认 `stable_level > 100`；
+第一条仅初始化完整 SDK、打印 FSM 和双臂位置反馈后退出，不发送状态切换或运动指令。
+脚本要求 SDK `0.1.8`，使用 `UDPv4`、`domain_id=123`、`robot_name="gr3"`、非 ROS 命名并关闭 discovery server。
+复用项目的初始化兼容处理：只有核对完整 publisher 列表后确认唯一未匹配话题是 `velocity_cmd` 才继续；
+其余 publisher、subscriber 和 service 仍须匹配。SDK 原来的 `Unmatched publisher: velocity_cmd` 日志后会有兼容警告；
+是否成功以最终初始化和反馈读取结果为准。该处理不恢复行走速度接口，也不修改安装的 SDK。
+第二条运行交互式悬挂抬臂测试，机器人须保持可靠悬挂支撑；FSM 11 会将下身执行器设为零扭矩，不用于自主站立。
+第一次回车切换到 UpperBodyUserCmd（FSM 11），最多等待 5 秒确认实际 FSM；超时信息包含实际状态值。
+随后检查双臂各 7 个关节的位置反馈，不要求 PdStand 的 `stable_level > 100`；
 第二次回车让双臂从当前姿态平滑前抬 30°，约 3 秒完成指令发送。
 只改变两臂的肩部 pitch（index 0，按当前 GR3 标定沿 SDK 负方向移动），其余关节保持当前位置。
-脚本检查位置向量、肩部限位和站立状态，不切换到行走 FSM，不发送速度指令。
+脚本检查位置向量和肩部限位，每次发送前检查 FSM 11 和双臂反馈有效性；状态改变或反馈无效立即停止发送。
 结束或异常时关闭客户端，不自动放下手臂；关闭客户端不等于硬件急停。
 末尾打印 SDK 缓存中的肩部反馈，不代表已经验证反馈新鲜度或实际到位，需现场观察动作。
-接口与站立条件见 [官方 PdStand 说明](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/controller_reference/pd_stand_state/)。
+接口与悬挂条件见 [官方 UpperBodyUserCmd 说明](https://support-old.fftai.com/docs/GR-X-Humanoid-Robot/GR3/SDK/Aurora-SDK/reference/controller_reference/upper_user_cmd_state/)。
 
 ## 项目当前阶段
 
@@ -373,6 +380,17 @@ python tools/calibrate_sleeve_elbow.py
 
 工具分别采集肘伸直和屈曲姿态，打印 median/min/max/std 及建议的 `input_min`、`input_max`、`invert_input`。写入配置前必须人工确认姿态和方向。
 
+实时查看所有袖套原始通道（CH1、CH2……，默认 5 Hz 刷新），无需按姿态回车：
+
+```bash
+python tools/calibrate_sleeve_elbow.py --monitor --sensor-config configs/bend6_calibration.measured.sensors.yaml
+```
+
+按 `Ctrl+C` 退出；可加 `--duration 30` 限时或 `--print-hz 10` 改刷新频率。
+`NEW` 表示新帧，`HELD` 表示沿用旧帧，`age` 显示数据年龄；无数据时显示 `WAITING`。
+此模式仅打开袖套串口，不连接 IMU、手套或机器人，不修改标定文件。
+离线查看可用 `python tools/calibrate_sleeve_elbow.py --monitor --fake --duration 3`。
+
 ### 2. FakeSleeve + FakeRobot
 
 ```bash
@@ -417,9 +435,9 @@ bash control.sh --print-only --duration 30
 
 按提示完成原有的肩部零位、前抬方向和上臂旋转标定后，每秒输出动作名称
 （前抬、侧抬、后伸、静止等）、肩前屈/后伸、肩外展及上臂旋转角度（度），
-以及置信度和传感器状态。双 IMU 打印模式默认不打开 Sleeve 串口，直接由 IMU 数据驱动刷新，
-肘屈曲角度显示“未提供”。需要同时读取袖套、查看肘关节时，使用
-`bash control.sh --print-only --sleeve real`。
+以及置信度和传感器状态。`control.sh` 默认读取 IMU 和 Bend6 手套，不使用袖套，
+加载 `configs/bend6_calibration.measured.sensors.yaml`，肘屈曲角度显示“未提供”。
+只读取 IMU 可运行 `bash control.sh --print-only --glove none --duration 30`。
 
 显示的是传感器推算的语义角度，未经机器人限位或速度限制，
 不是机器人实测姿态；未提供的关节角度显示“未提供”。
@@ -428,9 +446,18 @@ bash control.sh --print-only --duration 30
 仍需当前用户有传感器串口访问权限。`bash control.sh` 仍进入真机控制模式；
 `--print-only` 与 `--execute` 互斥。
 
-`bash control.sh` 的 Aurora 双 IMU 控制现在也默认跳过袖套，不打开 `/dev/ttyUSB2`。
-完成标定并输入 `YES` 后，只跟随 IMU 的肩部与上臂旋转输入，肘关节保持使能时的位置。
-需要袖套驱动肘关节时，使用 `bash control.sh --sleeve real`。
+`bash control.sh` 默认运行右臂 IMU 与 Bend6 手套联合控制，时长 3600 秒，不使用袖套。
+完成 IMU 标定并输入 `YES` 后，按 profile 准备 FSM（当前为 11）并开始跟随。
+可用 `bash control.sh --duration 30` 限时运行，`--sleeve real` 启用袖套肘部输入，
+`--glove none` 关闭手套，`--sensor-config <文件>` 更换传感器配置。
+仅使用 IMU 控制右臂可运行 `bash control.sh --glove none --duration 30`，肘关节保持启动位置。
+`--print-only` 不添加 FSM 准备或执行选项。
+
+`configs/phase3.yaml` 中的 `sleeve_stale_policy: pause` 容忍袖套短暂断流：
+最后一帧超过 `sensor_timeout_ms: 200` 时暂停发送新的手臂和手部目标，
+收到新鲜、预测有效的数据后按正常单步限速恢复；超过 `hard_timeout_ms: 1000` 则退出。
+这段时间机器人仍可能完成已经收到的最后一个目标。串口、预测、机器人反馈错误仍会退出，
+IMU-only 模式的过期退出规则不变。将该策略设为 `error` 可恢复 Aurora 首次过期即退出的行为。
 
 模型控制会把超出机器人关节位置范围的有限目标角度自动截到 YAML 中的
 `min_position` / `max_position`，避免仅因传感器目标越界而报 `target outside limits`。
@@ -438,13 +465,13 @@ bash control.sh --print-only --duration 30
 机器人仍按单步和速度限制逐步接近该目标；跟踪误差、反馈异常等保护继续生效。
 `--print-only` 仍显示原始传感器估计角度。
 
-`--sleeve auto`（默认）在双 IMU Aurora 控制或打印模式下禁用袖套，其他模式使用真实袖套。
+直接运行 Python 入口时，`--sleeve auto`（默认）在双 IMU Aurora 控制或打印模式下禁用袖套，其他模式使用真实袖套。
 显式 `--sleeve none` 支持双 IMU 的 Aurora、Aurora 模拟和打印模式；
 `flexarm_estimator` 肩部模型仍需要袖套数据。
 
 也可直接运行 `python tools/run_model_control.py --print-only --shoulder-predictor dual_imu`。
 无需传感器的模拟检查可使用
-`bash control.sh --print-only --imus fake --calibration-seconds 0.2 --duration 3`，
+`bash control.sh --print-only --sleeve fake --imus fake --glove fake --calibration-seconds 0.2 --duration 3`，
 仍需按提示回车完成模拟标定。
 
 ### 肩部推理器选择

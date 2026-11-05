@@ -33,7 +33,7 @@ def test_print_only_uses_real_imu_pipeline_without_sleeve_or_elbow_predictor(mon
     monkeypatch.setattr(intent_pipeline, "RuleBasedPredictor", forbidden)
     monkeypatch.setattr(factory, "create_robot", forbidden)
     assert run_model_control.main([
-        "--print-only", "--imus", "fake", "--calibration-seconds", ".1", "--duration", "2.05",
+        "--print-only", "--imus", "fake", "--glove", "none", "--calibration-seconds", ".1", "--duration", "2.05",
     ]) == 0
     output = capsys.readouterr().out
     assert "IMU ONLY" in output
@@ -50,8 +50,31 @@ def test_print_only_uses_real_imu_pipeline_without_sleeve_or_elbow_predictor(mon
     (["--print-only", "--sleeve", "none"], "none"),
 ])
 def test_sleeve_defaults_and_explicit_selection(options, expected):
-    configs = load_configs(parse_args(["--robot", "fake", *options]))
+    configs = load_configs(parse_args(["--robot", "fake", "--glove", "none", *options]))
     assert configs.sleeve_mode == expected
+
+
+@pytest.mark.parametrize("sleeve,glove,rejected", [
+    ("real", "real", True), ("none", "real", False),
+    ("fake", "real", False), ("real", "fake", False), ("real", "none", False),
+])
+@pytest.mark.parametrize("alias", [False, True])
+def test_only_active_real_sleeve_and_glove_must_have_distinct_ports(monkeypatch, tmp_path, sleeve, glove, rejected, alias):
+    config = configuration.load_sensor_config()
+    port = tmp_path / "ttyUSB_TEST"
+    glove_port = port
+    if alias:
+        glove_port = tmp_path / "glove-by-id"
+        glove_port.symlink_to(port)
+    config = replace(config, sleeve=replace(config.sleeve, port=str(port)),
+                     glove=replace(config.glove, port=str(glove_port)))
+    monkeypatch.setattr(configuration, "load_sensor_config", lambda _: config)
+    args = parse_args(["--print-only", "--sleeve", sleeve, "--glove", glove])
+    if rejected:
+        with pytest.raises(ValueError, match="Sleeve and glove cannot share serial port"):
+            load_configs(args)
+    else:
+        assert load_configs(args).sleeve_mode == sleeve
 
 
 def test_flex_model_print_only_still_requires_sleeve(monkeypatch, tmp_path):
@@ -111,7 +134,7 @@ def test_aurora_imu_control_runs_without_sleeve(monkeypatch, capsys, sleeve):
     assert run_model_control.main([
         "--robot", "aurora", "--execute", "--aurora-profile", "configs/robot_aurora.yaml",
         "--side", "right", "--source-side", "right", "--sleeve", sleeve,
-        "--calibration-seconds", ".1", "--duration", "1.1",
+        "--glove", "none", "--calibration-seconds", ".1", "--duration", "1.1",
     ]) == 0
     output = capsys.readouterr().out
     assert "IMU ONLY" in output and "imu_fps=" in output and "sleeve_fps=" not in output

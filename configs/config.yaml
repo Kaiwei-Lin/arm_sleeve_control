@@ -1,0 +1,7 @@
+Config:
+  RobotName: gr3        # gr1 / gr2 / gr3 / fouriern1
+  HardwareType: v224    # selects sys_config/gr3v224, matching this machine's installed config
+  RunType: 1            # 0 run simulator / 1 control real robot
+  UseJoyStick: false    # no joystick device connected; matches this machine's installed config
+  DomainID: 123         # use as default
+  RosCompatible: false # true for ROS 2 compatibility

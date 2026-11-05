@@ -1,0 +1,1 @@
+AuroraCore --config configs/config.yaml

@@ -81,7 +81,11 @@ and eventually hard-timeout; readiness cannot succeed with a partial intent
 after rotation prediction failed. The existing sensor/hard timeout values,
 prediction error thresholds and separate rotation error counts are unchanged.
 DyMotor holds on transient prediction/rotation failures; Aurora faults on the
-first prediction error or stale sample. A slow inference cannot submit after
+first prediction error. With `phase3.sleeve_stale_policy: pause`, a stale Sleeve
+sample pauses new arm/hand targets until fresh valid input returns; the hard
+timeout still faults. Robot health and acquisition errors continue to propagate,
+and resumption uses one normal control step. Omitted/`error` policy retains
+Aurora's immediate stale fault, as does IMU-only control. A slow inference cannot submit after
 hard timeout. Operator confirmation is followed by new robot feedback so an
 old pre-confirmation pose is never used as a startup command.
 

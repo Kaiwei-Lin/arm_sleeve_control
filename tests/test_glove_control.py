@@ -128,7 +128,7 @@ def test_shared_session_batch_limits_and_single_hand_isolation(monkeypatch, part
                 runtime.apply_hand(glove.targets(), .01)
             command = session.fake_client.commands[-1]
             assert set(command) == groups
-            assert max(abs(a - b) for a, b in zip(last, command["right_hand"])) <= .008 + 1e-10
+            assert max(abs(a - b) for a, b in zip(last, command["right_hand"])) <= .03 + 1e-10
             last = command["right_hand"]
         count = len(session.fake_client.commands)
         session.clock.sleep(.3)

@@ -1,0 +1,22 @@
+# TEMPLATE ONLY: null endpoints intentionally fail validation.
+# Fill all nine channels with measurements from this glove, then load the file.
+# No startup zeroing, guessed ranges or calibration from another glove is used.
+# YAML and JSON both accept glove.bend6.calibration.
+glove:
+  bend6:
+    calibration:
+      mode: normalized
+      channels:
+        little_ip: {raw_min: null, raw_max: null, invert: false}
+        little_ring_between: {raw_min: null, raw_max: null, invert: false}
+        ring_ip: {raw_min: null, raw_max: null, invert: false}
+        middle_ip: {raw_min: null, raw_max: null, invert: false}
+        index_middle_between: {raw_min: null, raw_max: null, invert: false}
+        index_mcp: {raw_min: null, raw_max: null, invert: false}
+        index_ip: {raw_min: null, raw_max: null, invert: false}
+        thumb_mcp: {raw_min: null, raw_max: null, invert: false}
+        thumb_tip_joint: {raw_min: null, raw_max: null, invert: false}
+# Optional per-channel points: [[measured_raw_0, 0], [measured_raw_half, 0.5],
+#                               [measured_raw_1, 1]]
+# Replace the words with measured finite numbers. Raw coordinates must increase;
+# outputs must be nondecreasing from 0 to 1. invert is applied afterwards.

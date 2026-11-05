@@ -4,11 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from sleeve_arm.config import load_phase3_config, load_phase4_config
+from sleeve_arm.config import load_phase3_config, load_phase4_config, load_sensor_config
 from sleeve_arm.domain import MotionIntent, SensorSample, SleeveFrame
 from sleeve_arm.robot.aurora_fake import FakeClock
 from sleeve_arm.runtime.intent_pipeline import RotationPredictionError
 from sleeve_arm.runtime.model_control import ModelControlApp, RuntimeState
+from sleeve_arm.runtime.sensors import SensorRuntime
+from sleeve_arm.sources import SerialSleeveSource
 
 
 class FakeSensorRuntime:
@@ -82,7 +84,8 @@ def make_app(**kwargs):
     telemetry = SimpleNamespace(reports=[], report=lambda **kw: telemetry.reports.append(kw))
     app = ModelControlApp(
         sensors=FakeSensorRuntime(clock, events), intents=FakeIntentPipeline(events),
-        robot=FakeRobotRuntime(events), phase3=load_phase3_config(), phase4=load_phase4_config(),
+        robot=FakeRobotRuntime(events), phase3=replace(load_phase3_config(), sleeve_stale_policy="error"),
+        phase4=load_phase4_config(),
         clock=clock, telemetry=telemetry, duration=kwargs.pop("duration", .055), **kwargs,
     )
     return app, events
@@ -268,6 +271,21 @@ def test_no_valid_prediction_during_readiness_faults_without_prepare_or_apply(mo
     assert "robot_prepare" not in events and not app.robot.commands
 
 
+def test_silent_sleeve_readiness_reports_port_without_attempting_prediction(monkeypatch):
+    app, events = make_app()
+    config = load_sensor_config()
+    config = replace(config, upper_arm_rotation=replace(config.upper_arm_rotation, enabled=False))
+    app.sensors = SensorRuntime(config, shoulder_backend="flexarm_estimator")
+    app.sensors.source = SerialSleeveSource("/dev/ttyUSB_TEST")
+    monkeypatch.setattr(app.sensors, "start", lambda: None)
+    assert app.run() == 1
+    assert "no Sleeve sample received; prediction was not attempted" in app.fault
+    assert "port=/dev/ttyUSB_TEST " in app.fault
+    assert "received_bytes=0 received_frames=0 invalid_frames=0" in app.fault
+    assert not app.intents.samples
+    assert "robot_prepare" not in events and not app.robot.commands
+
+
 def test_rotation_readiness_failure_cannot_arm_with_partial_intent(monkeypatch):
     app, events = make_app()
 
@@ -328,7 +346,7 @@ def test_print_only_entry_runs_live_predictions_without_robot(monkeypatch, capsy
     monkeypatch.setattr(factory, "create_robot", forbidden)
     assert run_model_control.main([
         "--print-only", "--robot", backend, "--side", "right", "--source-side", "right",
-        "--duration", "2.05", "--sleeve", "fake", "--imus", "fake",
+        "--duration", "2.05", "--sleeve", "fake", "--imus", "fake", "--glove", "none",
     ]) == 0
     output = capsys.readouterr().out
     assert output.count("[PRINT ONLY]") == 2

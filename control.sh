@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # bash control.sh --print-only: live sensor estimates without robot hardware.
-# Dual-IMU Aurora control and print-only skip Sleeve by default.
-# Add --sleeve real to enable Sleeve-based elbow input.
-# Other arguments are forwarded, e.g. --duration 30 or --sleeve fake --imus fake.
+# Defaults: right-arm IMUs + calibrated Bend6 hand; Sleeve is disabled.
+# Use --glove none for IMUs only, or --sleeve real to add Sleeve elbow input.
+# Other arguments are forwarded, e.g. --duration 30 or --sensor-config <file>.
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 mode=--execute
 show_help=false
@@ -16,6 +16,10 @@ for arg in "$@"; do
         *) extra_args+=("$arg") ;;
     esac
 done
+mode_args=("$mode")
+if [[ "$mode" == --execute ]]; then
+    mode_args+=(--prepare-aurora-fsm)
+fi
 
 # robot_aurora.yaml uses official GR3 velocity limits and matching 100 Hz steps.
 # --duration below bounds the whole session, not each joint movement.
@@ -32,9 +36,11 @@ exec "${runner[@]}" \
 --aurora-profile configs/robot_aurora.yaml \
 --arm-side right --source-side right \
 --shoulder-predictor dual_imu \
+--sleeve none \
 --imus real \
---sensor-config configs/sensors.yaml \
+--glove real \
+--sensor-config configs/bend6_calibration.measured.sensors.yaml \
 --phase3-config configs/phase3.yaml \
 --duration 3600 \
 --imu-debug \
-"$mode" "${extra_args[@]}"
+"${mode_args[@]}" "${extra_args[@]}"

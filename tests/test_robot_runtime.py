@@ -49,7 +49,7 @@ def launch_control(tmp_path, monkeypatch):
 
 
 def test_control_script_runtime_uses_official_speed_for_all_controlled_joints(monkeypatch, capsys, launch_control):
-    argv, used_sudo = launch_control()
+    argv, used_sudo = launch_control("--sleeve", "none", "--glove", "none")
     assert used_sudo
     args = parse_args(argv)
     profile = load_aurora_profile(args.aurora_profile)
@@ -86,9 +86,22 @@ def test_control_print_only_forwards_options_without_sudo_or_execute(launch_cont
     argv, used_sudo = launch_control("--print-only", "--duration", "3", "--sleeve", "fake", "--imus", "fake")
     args = parse_args(argv)
     assert args.print_only and not args.execute and not used_sudo
+    assert not args.prepare_aurora_fsm
     assert args.duration == 3 and args.sleeve == args.imus == "fake"
     assert args.side == args.source_side == "right"
     assert args.shoulder_predictor == "dual_imu" and args.imu_debug
+
+
+def test_control_defaults_to_calibrated_bend6_and_explicit_fsm_preparation(launch_control):
+    argv, used_sudo = launch_control()
+    args = parse_args(argv)
+    assert used_sudo and args.execute and args.prepare_aurora_fsm
+    assert args.sleeve == "none" and args.imus == args.glove == "real"
+    assert args.sensor_config == Path("configs/bend6_calibration.measured.sensors.yaml")
+    assert args.duration == 3600
+    argv, _ = launch_control("--sensor-config", "configs/sensors_bend6.example.yaml", "--duration", "30")
+    args = parse_args(argv)
+    assert args.sensor_config == Path("configs/sensors_bend6.example.yaml") and args.duration == 30
 
 
 @pytest.mark.parametrize("options,expected", [((), "none"), (("--sleeve", "real"), "real")])
@@ -105,7 +118,7 @@ def test_control_skips_sleeve_unless_explicitly_requested(launch_control, option
 
 
 def test_control_imu_only_preserves_elbow_pose_after_confirmation(monkeypatch, launch_control):
-    argv, _ = launch_control()
+    argv, _ = launch_control("--glove", "none")
     args = parse_args(argv)
     profile = load_aurora_profile(args.aurora_profile)
     session = fake_session(profile=replace(profile, simulated=True, allow_missing_velocity_cmd=False))

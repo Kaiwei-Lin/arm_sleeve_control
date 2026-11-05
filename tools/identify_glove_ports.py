@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read matching serial ports as Bend5 streams to locate a glove by finger motion."""
+"""Read matching serial ports as Bend5/Bend6 streams to locate a glove by finger motion."""
 
 from __future__ import annotations
 
@@ -13,17 +13,26 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sleeve_arm.sources.glove import Bend5GloveSource
+from sleeve_arm.sources.bend6 import Bend6GloveSource
 from tools.identify_imu_ports import discover_ports, positive_float, positive_int
 
 
 class PortMonitor:
-    def __init__(self, port: str, baudrate: int, serial_factory: Callable | None = None) -> None:
+    def __init__(self, port: str, baudrate: int, serial_factory: Callable | None = None,
+                 *, backend="bend5", packet_delimiter=";") -> None:
         self.port = port
+        self.backend = backend
         self._open_error: str | None = None
-        self.reader = Bend5GloveSource(
-            port, baudrate, timeout=0.1, zero_on_start=False,
-            adaptive_baseline=False, filter_alpha=1.0, serial_factory=serial_factory,
-        )
+        if backend == "bend6":
+            self.reader = Bend6GloveSource(port, baudrate, timeout=.02, serial_factory=serial_factory,
+                                           packet_delimiter=packet_delimiter)
+        elif backend == "bend5":
+            self.reader = Bend5GloveSource(
+                port, baudrate, timeout=0.1, zero_on_start=False,
+                adaptive_baseline=False, filter_alpha=1.0, serial_factory=serial_factory,
+            )
+        else:
+            raise ValueError("glove backend must be bend5 or bend6")
 
     def start(self) -> None:
         try:
@@ -45,17 +54,24 @@ class PortMonitor:
         if error is not None:
             return f"{self.port} | NONE ({' '.join(error.splitlines())})"
         if reading is None:
-            return f"{self.port} | NONE (等待有效 Bend5 帧)"
+            return f"{self.port} | NONE (等待有效 {self.backend.title()} 帧)"
         age = max(0.0, now - reading.timestamp)
         if age > stale_seconds:
             return f"{self.port} | NONE (数据过期，上次有效帧 {age:.1f}s 前)"
+        if self.backend == "bend6":
+            channels = ", ".join(f"{name}={value:g}" for name, value in reading.raw_channels.items())
+            return (f"{self.port} | age={age * 1000:.0f}ms | bend6=({channels}) | "
+                    f"reserved_10={reading.raw[9]:g}, reserved_11={reading.raw[10]:g} | seq={reading.sequence}")
         fingers = ",".join(f"{value:g}" for value in reading.raw[:5])
         tail = ",".join(f"{value:g}" for value in reading.raw[5:])
         return f"{self.port} | age={age * 1000:.0f}ms | bend5=({fingers}) | tail=({tail})"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="按 Bend5 格式读取所有匹配串口，弯曲手指确认手套端口。")
+    parser = argparse.ArgumentParser(description="按 Bend5/Bend6 格式读取所有匹配串口，弯曲手指确认手套端口。")
+    parser.add_argument("--backend", choices=("bend5", "bend6"), default="bend6")
+    parser.add_argument("--bend6-packet-delimiter", choices=("semicolon", "newline"), default="semicolon",
+                        help="Bend6 包结束符；字段用分号分隔时必须选 newline")
     parser.add_argument("--prefix", default="/dev/ttyUSB", help="串口路径前缀（不带 *）")
     parser.add_argument("--baudrate", type=positive_int, default=115200, help="默认 115200 / 8N1")
     parser.add_argument("--print-hz", type=positive_float, default=5.0, help="终端刷新频率，默认 5 Hz")
@@ -82,7 +98,9 @@ def run(
         print(f"未找到 {args.prefix}*；请检查 USB 连接、驱动和设备节点。", file=output)
         return 1
 
-    monitors = [PortMonitor(port, args.baudrate, serial_factory) for port in ports]
+    delimiter = ";" if args.bend6_packet_delimiter == "semicolon" else "\n"
+    monitors = [PortMonitor(port, args.baudrate, serial_factory, backend=args.backend,
+                            packet_delimiter=delimiter) for port in ports]
     clear = output.isatty() and not args.no_clear
     result = 0
     try:
@@ -93,8 +111,10 @@ def run(
         while True:
             now = clock()
             lines = [
-                f"Bend5 手套端口识别 | {len(ports)} 个端口 | {args.baudrate} / 8N1 | {now - started:.1f}s",
-                "逐个弯曲手指，观察 bend5（小指,无名指,中指,食指,拇指）；tail 为其余六路。Ctrl+C 退出。",
+                f"{args.backend.title()} 手套端口识别 | {len(ports)} 个端口 | {args.baudrate} / 8N1 | {now - started:.1f}s",
+                ("逐通道活动，观察九个 Bend6 名称；reserved_10/11 不参与控制。Ctrl+C 退出。"
+                 if args.backend == "bend6" else
+                 "逐个弯曲手指，观察 bend5（小指,无名指,中指,食指,拇指）；tail 为其余六路。Ctrl+C 退出。"),
                 *(monitor.format_line(now, args.stale_seconds) for monitor in monitors),
             ]
             print(("\033[H\033[2J" if clear else "") + "\n".join(lines), file=output, flush=True)

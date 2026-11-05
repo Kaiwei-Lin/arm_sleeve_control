@@ -146,6 +146,7 @@ class PrintOnlyRuntime:
     fail_fast = False
     stream_between_samples = False
     motion_enabled = False
+    read_only = True
 
     def __init__(self, *, print_fn=print):
         self.print = print_fn

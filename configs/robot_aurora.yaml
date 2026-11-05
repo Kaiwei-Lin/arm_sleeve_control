@@ -127,7 +127,7 @@ groups:
   - name: shoulder_flexion
     index: 0
     sign: -1
-    zero: 0.0
+    zero: 0.15
     verified: true
     limits:
       min_position: -2.9671
@@ -172,7 +172,9 @@ groups:
       max_feedback_velocity: 6.28
       max_position_step: 0.0628
       max_tracking_error: 3.14
-# GR3 Aurora hand order: thumb bend, index, middle, ring, pinky, thumb swing.
+# Application pose order is semantic: thumb bend, index, middle, ring, pinky, thumb swing.
+# SDK slot order is defined by each group's joint indices below.
+# Left hand retains its previous layout; this session only checked the right hand.
 # These are direct SDK radians; speed/step/tracking limits are application limits.
 # Keep target slew separate from the measured-speed alarm threshold.
 # The 3.14 rad/s feedback threshold is a site setting, not a vendor speed rating.
@@ -193,7 +195,7 @@ groups:
     zero: 0.0
     kind: finger
     verified: true
-    limits:
+    limits: &thumb_bend_limits
       min_position: 0.12
       max_position: 1.28
       max_velocity: 0.8
@@ -204,7 +206,7 @@ groups:
     <<: *thumb_bend
     name: index_flexion
     index: 1
-    limits:
+    limits: &finger_limits
       min_position: 0.17
       max_position: 1.78
       max_velocity: 0.8
@@ -214,10 +216,11 @@ groups:
   - {<<: *finger, name: middle_flexion, index: 2}
   - {<<: *finger, name: ring_flexion, index: 3}
   - {<<: *finger, name: pinky_flexion, index: 4}
-  - <<: *thumb_bend
+  - &thumb_swing
+    <<: *thumb_bend
     name: thumb_swing
     index: 5
-    limits:
+    limits: &thumb_swing_limits
       min_position: 0.0
       max_position: 1.68
       max_velocity: 0.8
@@ -227,6 +230,27 @@ groups:
 - <<: *aurora_hand
   name: right_hand
   side: right
+  # 2026-10-28: operator observed thumb->index->middle->ring->pinky->thumb
+  # with the old slots; isolated thumb flexion predominantly changed Bend6 raw[8].
+  # Right SDK order: index, middle, ring, pinky, thumb bend, thumb swing.
+  # Move each joint's existing SDK bounds with its index; do not widen any limits.
+  sdk_position_limits: [[0.17, 1.78], [0.17, 1.78], [0.17, 1.78], [0.17, 1.78], [0.12, 1.28], [0.0, 1.68]]
+  joints:
+  # Match the operator's previous bridge: 0.03 rad per 100 Hz period = 3 rad/s.
+  # This is a command slew setting, not a verified motor maximum speed.
+  # Retain the existing 3.14 rad/s feedback threshold and all position bounds.
+  - <<: *thumb_bend
+    index: 4
+    limits: {<<: *thumb_bend_limits, max_velocity: 3.0, max_position_step: 0.03}
+  - &right_finger
+    <<: *finger
+    index: 0
+    limits: {<<: *finger_limits, max_velocity: 3.0, max_position_step: 0.03}
+  - {<<: *right_finger, name: middle_flexion, index: 1}
+  - {<<: *right_finger, name: ring_flexion, index: 2}
+  - {<<: *right_finger, name: pinky_flexion, index: 3}
+  - <<: *thumb_swing
+    limits: {<<: *thumb_swing_limits, max_velocity: 3.0, max_position_step: 0.03}
 allow_missing_velocity_cmd: true
 minimum_stable_level: 100
 stable_wait_seconds: 3.0

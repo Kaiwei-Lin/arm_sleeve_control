@@ -146,3 +146,51 @@ def test_invalid_cli_values_rejected(argv):
     with pytest.raises(SystemExit) as exc:
         identify.main(argv)
     assert exc.value.code == 2
+
+
+def test_bend6_ports_have_independent_parsers_and_show_nine_channels_and_reserved():
+    from sleeve_arm.sources.bend6 import BEND6_CHANNEL_NAMES
+
+    serials = {
+        "a": FakeSerial([b"partial;0,1,2,", b"3,4,5,6,7,8,90,91;"]),
+        "b": FakeSerial([b"partial;100 101 102 103 104 105 106 107 108 -9 -10;"]),
+        "bad": FakeSerial([b"partial;nan,1,2;", b"5,6;"]),
+        "unplugged": FakeSerial(error=OSError("disconnected")),
+    }
+    monitors = {name: identify.PortMonitor(name, 115200, lambda **kw: serials[kw["port"]], backend="bend6")
+                for name in serials}
+    try:
+        for monitor in monitors.values():
+            monitor.start()
+        deadline = time.monotonic() + 2
+        while True:
+            lines = {name: monitor.format_line(time.monotonic(), 10) for name, monitor in monitors.items()}
+            if "bend6=" in lines["a"] and "bend6=" in lines["b"] and "disconnected" in lines["unplugged"]:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(.005)
+        for index, name in enumerate(BEND6_CHANNEL_NAMES):
+            assert f"{name}={index}" in lines["a"]
+            assert f"{name}={100 + index}" in lines["b"]
+        assert "reserved_10=90, reserved_11=91" in lines["a"]
+        assert "reserved_10=-9, reserved_11=-10" in lines["b"]
+        assert "age=" in lines["a"] and "seq=1" in lines["a"]
+        assert "NONE" in lines["bad"]
+        assert "数据过期" in monitors["a"].format_line(time.monotonic() + 2, 1)
+    finally:
+        for monitor in monitors.values():
+            monitor.close()
+    assert all(serial.closed.is_set() for serial in serials.values())
+
+
+def test_bend6_cli_scan_uses_selected_parser(tmp_path):
+    prefix = str(tmp_path / "ttyUSB")
+    (tmp_path / "ttyUSB0").touch()
+    serial = FakeSerial([b"partial\n0;1;2;3;4;5;6;7;8;9;10\n"])
+    output = io.StringIO()
+    args = identify.parse_args(["--backend", "bend6", "--prefix", prefix, "--duration", ".05",
+                                "--bend6-packet-delimiter", "newline"])
+    assert identify.run(args, serial_factory=lambda **_: serial, output=output) == 0
+    assert "Bend6" in output.getvalue() and "thumb_tip_joint=8" in output.getvalue()
+    assert serial.closed.is_set()
+    assert identify.parse_args([]).backend == "bend5"

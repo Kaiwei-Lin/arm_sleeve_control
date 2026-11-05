@@ -1,0 +1,103 @@
+# Serial values come from the previously validated arm_data_collector implementation.
+# Port names remain unset because they are machine-specific.
+sensors:
+  # Bend6 is opt-in. Configure the port before --glove real; raw is read-only.
+  glove:
+    enabled: false
+    backend: bend6
+    port: null
+    baudrate: 115200
+    timeout_s: 0.02
+    stale_timeout_s: 0.25
+    # error: exit on stale input; hold_last: retain last valid frame until data resumes.
+    stale_policy: error
+    startup_timeout_s: 10.0
+    # Relative to this YAML; null means raw, never a guessed normalization.
+    calibration_path: null
+    source_options:
+      side: right
+      # Default wire format: 11 comma/whitespace fields followed by ';'.
+      # For semicolon-separated fields with newline-ended packets use "\n".
+      packet_delimiter: ";"
+      filter:
+        enabled: false
+        type: ema
+        alpha: 0.35
+        deadband: 0.01
+        max_delta_per_sample: null
+    bend6_mapping:
+      thumb_bend: thumb_tip_joint
+      index_flexion: index_ip
+      middle_flexion: middle_ip
+      ring_flexion: ring_ip
+      pinky_flexion: little_ip
+      thumb_swing: thumb_mcp
+  sleeve:
+    enabled: true
+    backend: serial_ascii
+    port: /dev/ttyUSB2
+    baudrate: 115200
+    timeout_s: 1.0
+    delimiter: ";"
+    expected_fields: 11
+  #胸
+  imu1:
+    enabled: true
+    backend: imu770_serial
+    port: /dev/ttyCH9344USB3
+    baudrate: 460800
+    timeout_s: 0.1
+  #小臂
+  imu2:
+    enabled: true
+    backend: imu770_serial
+    port: /dev/ttyCH9344USB2
+    baudrate: 460800
+    timeout_s: 0.1
+
+  # Configure these two machine-specific ports before real rotation control.
+  #前大臂
+  imu3:
+    enabled: true
+    backend: imu770_serial
+    port: /dev/ttyCH9344USB5
+    baudrate: 460800
+    timeout_s: 0.1
+  #后大臂
+  imu4:
+    enabled: true
+    backend: imu770_serial
+    port: /dev/ttyCH9344USB4
+    baudrate: 460800
+    timeout_s: 0.1
+
+# DualImuArmEstimator inputs. IMU1 is on the right upper arm; IMU2 is on the chest.
+shoulder_imu:
+  arm_imu: imu4
+  chest_imu: imu1
+  max_sync_ms: null
+  calibration_seconds: 2.0
+  startup_timeout_s: 10.0
+
+# Optional dual-IMU upper-arm rotation. Enable only after both IMU endpoints
+# and the calibrated ID24 robot limits are ready.
+upper_arm_rotation:
+  enabled: true
+  upper_imu: imu3
+  reference_imu: imu2
+  # Parser order is [w,x,y,z]; interpreted as Sensor->World per the reference demo.
+  twist_axis: x
+  ema_alpha: 0.35
+  # null: fall back to synchronization.max_time_delta_ms.
+  max_sync_ms: null
+  calibration_seconds: 2.0
+  startup_timeout_s: 10.0
+
+# Software defaults for initial synchronization tests, not validated experiment parameters.
+synchronization:
+  max_time_delta_ms: 20
+  buffer_duration_ms: 500
+
+recording:
+  output_dir: recordings
+  format: csv

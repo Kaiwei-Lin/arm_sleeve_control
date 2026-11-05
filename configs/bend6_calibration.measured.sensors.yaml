@@ -1,0 +1,94 @@
+sensors:
+  glove:
+    enabled: true
+    backend: bend6
+    port: /dev/ttyUSB2
+    baudrate: 115200
+    timeout_s: 0.02
+    stale_timeout_s: 0.25
+    stale_policy: hold_last
+    startup_timeout_s: 60.0
+    calibration_path: bend6_calibration.measured.yaml
+    open_pose_rad:
+    - 0.35
+    - 0.22
+    - 0.22
+    - 0.22
+    - 0.22
+    - 0.05
+    closed_pose_rad:
+    - 1.28
+    - 1.78
+    - 1.78
+    - 1.78
+    - 1.78
+    - 1.68
+    source_options:
+      side: right
+      packet_delimiter: ;
+      filter:
+        enabled: false
+        type: ema
+        alpha: 0.35
+        deadband: 0.01
+        max_delta_per_sample: null
+    bend6_mapping:
+      thumb_bend: thumb_tip_joint
+      index_flexion: index_ip
+      middle_flexion: middle_ip
+      ring_flexion: ring_ip
+      pinky_flexion: little_ip
+      thumb_swing: thumb_tip_joint
+  sleeve:
+    enabled: true
+    backend: serial_ascii
+    port: /dev/ttyUSB1
+    baudrate: 115200
+    timeout_s: 1.0
+    delimiter: ;
+    expected_fields: 11
+  imu1:
+    enabled: true
+    backend: imu770_serial
+    port: /dev/ttyCH9344USB3
+    baudrate: 460800
+    timeout_s: 0.1
+  imu2:
+    enabled: true
+    backend: imu770_serial
+    port: /dev/ttyCH9344USB2
+    baudrate: 460800
+    timeout_s: 0.1
+  imu3:
+    enabled: true
+    backend: imu770_serial
+    port: /dev/ttyCH9344USB5
+    baudrate: 460800
+    timeout_s: 0.1
+  imu4:
+    enabled: true
+    backend: imu770_serial
+    port: /dev/ttyCH9344USB4
+    baudrate: 460800
+    timeout_s: 0.1
+shoulder_imu:
+  arm_imu: imu4
+  chest_imu: imu1
+  max_sync_ms: null
+  calibration_seconds: 2.0
+  startup_timeout_s: 10.0
+upper_arm_rotation:
+  enabled: true
+  upper_imu: imu3
+  reference_imu: imu2
+  twist_axis: x
+  ema_alpha: 0.35
+  max_sync_ms: null
+  calibration_seconds: 2.0
+  startup_timeout_s: 10.0
+synchronization:
+  max_time_delta_ms: 20
+  buffer_duration_ms: 500
+recording:
+  output_dir: recordings
+  format: csv

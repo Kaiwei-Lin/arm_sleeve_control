@@ -12,10 +12,18 @@ from sleeve_arm.domain.joint import JOINT_NAMES
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "robot.yaml"
-DEFAULT_SENSOR_CONFIG_PATH = PROJECT_ROOT / "configs" / "sensors.yaml"
+DEFAULT_SENSOR_CONFIG_PATH = PROJECT_ROOT / "configs" / "sensors_bend6.local.yaml"
 DEFAULT_PHASE3_CONFIG_PATH = PROJECT_ROOT / "configs" / "phase3.yaml"
 DEFAULT_PHASE4_CONFIG_PATH = PROJECT_ROOT / "configs" / "phase4.yaml"
 IMU_NAMES = ("imu1", "imu2", "imu3", "imu4")
+BEND6_DEFAULT_MAPPING = {
+    "thumb_bend": "thumb_tip_joint",
+    "index_flexion": "index_ip",
+    "middle_flexion": "middle_ip",
+    "ring_flexion": "ring_ip",
+    "pinky_flexion": "little_ip",
+    "thumb_swing": "thumb_tip_joint",
+}
 
 
 @dataclass(frozen=True)
@@ -114,9 +122,13 @@ class GloveConfig:
     source_options: dict[str, Any] = field(default_factory=dict)
     stale_timeout_s: float = 0.25
     startup_timeout_s: float = 10.0
-    # Aurora reference demo order: thumb bend, index, middle, ring, pinky, thumb swing.
+    # Semantic pose order: thumb bend, index, middle, ring, pinky, thumb swing.
+    # The robot profile maps these names to side-specific SDK array indices.
     open_pose_rad: tuple[float, ...] = (1.18, 0.22, 0.22, 0.22, 0.22, 0.05)
     closed_pose_rad: tuple[float, ...] = (0.35, 1.40, 1.40, 1.40, 1.40, 1.25)
+    bend6_mapping: dict[str, str] = field(default_factory=lambda: dict(BEND6_DEFAULT_MAPPING))
+    # Bend6 can explicitly retain its last valid sample during input silence.
+    stale_policy: str = "error"
 
 
 @dataclass(frozen=True)
@@ -159,6 +171,7 @@ class Phase3Config:
     sensor_timeout_ms: float
     hard_timeout_ms: float
     control_hz: float
+    sleeve_stale_policy: str = "error"
 
 
 @dataclass(frozen=True)
@@ -411,13 +424,30 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
         if name in glove_raw:
             glove_raw[name] = tuple(float(value) for value in glove_raw[name])
     glove = GloveConfig(**glove_raw)
-    if type(glove.enabled) is not bool or glove.backend != "bend5":
-        raise ValueError("glove requires boolean enabled and backend=bend5")
+    validate_glove_config(glove)
+    return SensorConfig(
+        sleeve,
+        *(endpoints[name] for name in IMU_NAMES),
+        shoulder,
+        rotation,
+        synchronization,
+        recording_config,
+        glove,
+    )
+
+
+def validate_glove_config(glove):
+    if type(glove.enabled) is not bool or glove.backend not in ("bend5", "bend6"):
+        raise ValueError("glove requires boolean enabled and backend=bend5/bend6")
+    if not isinstance(glove.stale_policy, str) or glove.stale_policy not in ("error", "hold_last"):
+        raise ValueError("glove.stale_policy must be error or hold_last")
+    if glove.stale_policy == "hold_last" and glove.backend != "bend6":
+        raise ValueError("glove.stale_policy=hold_last requires backend=bend6")
     if glove.port is not None and (not isinstance(glove.port, str) or not glove.port.strip()):
         raise ValueError("glove.port must be a nonempty string or null")
     if type(glove.baudrate) is not int or glove.baudrate <= 0:
         raise ValueError("glove.baudrate must be a positive integer")
-    if not all(math.isfinite(value) and value > 0 for value in (
+    if not all(type(value) in (int, float) and math.isfinite(value) and value > 0 for value in (
         glove.timeout_s, glove.stale_timeout_s, glove.startup_timeout_s,
     )):
         raise ValueError("glove timeouts must be positive and finite")
@@ -428,15 +458,24 @@ def load_sensor_config(path: str | Path = DEFAULT_SENSOR_CONFIG_PATH) -> SensorC
     for pose in (glove.open_pose_rad, glove.closed_pose_rad):
         if len(pose) != 6 or not all(math.isfinite(value) for value in pose):
             raise ValueError("glove open/closed poses must contain six finite radians")
-    return SensorConfig(
-        sleeve,
-        *(endpoints[name] for name in IMU_NAMES),
-        shoulder,
-        rotation,
-        synchronization,
-        recording_config,
-        glove,
-    )
+    if glove.backend == "bend6":
+        from sleeve_arm.sources.bend6 import Bend6GloveSource
+
+        validate_bend6_mapping(glove.bend6_mapping)
+        if set(glove.source_options) - {"side", "filter", "packet_delimiter"}:
+            raise ValueError("Bend6 source_options only accepts side, filter and packet_delimiter")
+        # Construction validates all calibration/filter options without opening serial.
+        Bend6GloveSource(glove.port or "UNOPENED", glove.baudrate, glove.timeout_s,
+                         calibration_path=glove.calibration_path, **glove.source_options)
+
+
+def validate_bend6_mapping(mapping):
+    from sleeve_arm.sources.bend6 import BEND6_CHANNEL_NAMES
+
+    if not isinstance(mapping, dict) or set(mapping) != set(BEND6_DEFAULT_MAPPING):
+        raise ValueError("Bend6 mapping requires exactly the six Aurora hand joints")
+    if any(not isinstance(value, str) or value not in BEND6_CHANNEL_NAMES for value in mapping.values()):
+        raise ValueError("Bend6 mapping sources must be known active channel names; reserved fields are forbidden")
 
 
 def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3Config:
@@ -470,6 +509,7 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
         sensor_timeout_ms=float(phase3["sensor_timeout_ms"]),
         hard_timeout_ms=float(phase3["hard_timeout_ms"]),
         control_hz=float(phase3["control_hz"]),
+        sleeve_stale_policy=phase3.get("sleeve_stale_policy", "error"),
     )
     numeric_values = {
         "deadzone": config.elbow.deadzone,
@@ -508,6 +548,8 @@ def load_phase3_config(path: str | Path = DEFAULT_PHASE3_CONFIG_PATH) -> Phase3C
         raise ValueError("angle_range min_deg must be less than max_deg")
     if config.sensor_timeout_ms <= 0 or config.hard_timeout_ms <= config.sensor_timeout_ms:
         raise ValueError("timeouts must satisfy 0 < sensor_timeout_ms < hard_timeout_ms")
+    if config.sleeve_stale_policy not in ("error", "pause"):
+        raise ValueError("phase3.sleeve_stale_policy must be error or pause")
     if config.control_hz <= 0:
         raise ValueError("control_hz must be positive")
     return config

@@ -4,6 +4,26 @@
 
 审计日期：2026-09-25。范围仅限 Python 环境、SDK 安装、import/API introspection、只读 doctor 实现和离线测试。**本轮没有创建真实 DDS participant、连接机器人、申请 lease、切换 FSM 或发送动作。**
 
+## 2026-10-28 本机 PolicyService 导入错误
+
+在本机 `skin` 环境中，若导入 `_PolicyServiceWrapper.so` 报
+`undefined symbol: _ZN12fourier_msgs3srv30PolicyChange_RequestPubSubTypeC1Ev`，
+已确认原因是 SDK 动态库混用：`LD_LIBRARY_PATH` 使 Python 优先加载
+`/opt/fftai/fourier_dds_msgs/lib/libPolicyService.so`，该库没有所需符号；
+Python 用户目录中 pip SDK 自带的 `fourier_dds_msgs_lib/libPolicyService.so`
+包含该符号。清除子进程的库和模块搜索路径后，包装模块通过自身 RUNPATH
+找到配套库。只需对这一次命令清除变量，无需修改全局环境或重装 SDK：
+
+```bash
+env -u LD_LIBRARY_PATH -u PYTHONPATH python tools/aurora_sdk_doctor.py
+```
+
+本机已离线验证输出 `import_ok: true`、`dds_started: false`，SDK 版本为
+`0.1.8`。这仅验证导入，未验证机器人连接或运动。真实执行命令也可使用
+同样的 `env -u LD_LIBRARY_PATH -u PYTHONPATH` 前缀，见
+[Bend6 手部执行](glove_control.md#e-现场验证后执行真实-gr3-手部)。
+下方安装路径和测试数字仍为 2026-09-25 的历史审计记录。
+
 ## 已安装在哪里，以及怎么使用
 
 本机已安装成功，不需要再找 Aurora wheel。请在 WSL/Linux 终端进入项目根目录，然后执行：
