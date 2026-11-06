@@ -85,6 +85,7 @@ class SensorRuntime:
         self.imu_mode = imus
         self.shoulder_backend = shoulder_backend
         self.source = None
+        self._last_sleeve = None
         self.imu_sources = {}
         self.imu_error = None
         self.rotation_pair = None
@@ -152,6 +153,11 @@ class SensorRuntime:
             # not look fresh just because the other IMU keeps producing data.
             return SensorSample(min(frame.timestamp for frame in pair), None, *pair)
         frame = self.source.latest()
+        if frame is not None:
+            self._last_sleeve = frame
+        else:
+            # A missing Sleeve read must not discard the independently updated IMUs.
+            frame = self._last_sleeve
         if frame is None:
             return None
         sample = self.shoulder_sync.synchronize(frame)

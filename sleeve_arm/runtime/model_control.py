@@ -124,16 +124,29 @@ class ModelControlApp:
             return None
         else:
             self.rotation_consecutive_errors = 0
+        # Discard expired inference without ending an Aurora control session.
+        independent = getattr(self.intents, "independent_updates", False)
+        if not independent and getattr(self.robot, "is_aurora", False) and self.watchdog.is_stale(sample.timestamp, self.clock.monotonic()):
+            self._warn_stale(self.watchdog.age(sample.timestamp, self.clock.monotonic()))
+            return None
         # No completed inference may submit a sample that crossed hard timeout.
         now = self.clock.monotonic()
-        if self.watchdog.is_hard_timeout(sample.timestamp, now):
+        if not independent and self.watchdog.is_hard_timeout(sample.timestamp, now):
             raise RuntimeError(f"prediction completed after {self.sample_label} hard timeout")
         self.consecutive_errors = 0
-        if (self.sample_label == "Sleeve" and self.phase3.sleeve_stale_policy == "pause"
+        if (not independent and self.sample_label == "Sleeve" and self.phase3.sleeve_stale_policy == "pause"
                 and self.watchdog.is_stale(sample.timestamp, now)):
             self._pause_sleeve(self.watchdog.age(sample.timestamp, now))
             return None
         return intent
+
+    def _warn_stale(self, age, *, independent=False):
+        if self.state is not RuntimeState.STALE:
+            action = ("reusing last Sleeve target; IMU and glove updates continue" if independent
+                      else "holding last safe target; waiting for fresh data")
+            self.print(f"WARNING: {self.sample_label} stale ({age * 1000:.1f} ms); {action}")
+        self.state = RuntimeState.STALE
+        self.stale += 1
 
     def _control_loop(self, sample, intent):
         period = 1.0 / self.phase3.control_hz
@@ -141,6 +154,7 @@ class ModelControlApp:
         deadline = None if self.duration is None else started + self.duration
         last_timestamp = sample.timestamp
         targets = self.robot.startup
+        independent = getattr(self.intents, "independent_updates", False)
         pause_sleeve = self.sample_label == "Sleeve" and self.phase3.sleeve_stale_policy == "pause"
         self.state = RuntimeState.RUNNING
         while deadline is None or self.clock.monotonic() < deadline:
@@ -154,10 +168,20 @@ class ModelControlApp:
                 sample = incoming
             # Check the last known timestamp even when latest() returns None.
             age = self.watchdog.age(sample.timestamp, now)
-            if self.watchdog.is_hard_timeout(sample.timestamp, now):
+            if independent:
+                sleeve_stale = sample.sleeve is not None and self.watchdog.is_stale(sample.sleeve.timestamp, now)
+                if sleeve_stale:
+                    self._warn_stale(age, independent=True)
+                predicted = self._predict(sample)
+                if predicted is not None:
+                    targets = self._apply(predicted, period)
+                    intent = predicted
+                    self.predictions += int(self.intents.prediction_updated)
+                    self.state = RuntimeState.STALE if sleeve_stale else RuntimeState.RUNNING
+            elif self.watchdog.is_hard_timeout(sample.timestamp, now):
                 raise RuntimeError(f"{self.sample_label} hard timeout: {age * 1000:.1f} ms "
                                    f"(limit={self.phase3.hard_timeout_ms:g} ms){self._sensor_diagnostics()}")
-            if self.watchdog.is_stale(sample.timestamp, now):
+            elif self.watchdog.is_stale(sample.timestamp, now):
                 if self.robot.fail_fast and not pause_sleeve:
                     raise RuntimeError(
                         f"sensor watchdog: stale/missing {self.sample_label.lower()} feedback; "

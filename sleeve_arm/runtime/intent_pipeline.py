@@ -201,7 +201,7 @@ class RotationPredictionError(ValueError):
 
 class IntentPipeline:
     def __init__(self, configs, *, reuse_calibration=False, calibration_seconds=None,
-                 calibration_output=None, input_fn=None, print_fn=print):
+                 calibration_output=None, input_fn=None, print_fn=print, independent_updates=False):
         self.configs = configs
         self.backend = configs.shoulder_backend
         self.reuse_calibration = reuse_calibration
@@ -216,6 +216,11 @@ class IntentPipeline:
         self.rotation_result = None
         self.last_rotation_frames = None
         self.last_rotation_rad = None
+        self.independent_updates = independent_updates
+        self.prediction_updated = False
+        self._shoulder_key = self._elbow_key = self._rotation_key = None
+        self._shoulder_intent = None
+        self._elbow_angle = None
 
     def prepare(self, sensors):
         self.sensors = sensors
@@ -259,6 +264,8 @@ class IntentPipeline:
     def predict(self, sample: SensorSample) -> MotionIntent:
         if self.sensors.imu_error is not None:
             raise self.sensors.imu_error
+        if self.independent_updates:
+            return self._predict_independent(sample)
         shoulder = self.shoulder.predict(sample)
         elbow = None if self.elbow is None else self.elbow.predict(sample).elbow_flexion
         intent = replace(shoulder, elbow_flexion=elbow)
@@ -277,6 +284,57 @@ class IntentPipeline:
             intent = replace(intent, upper_arm_rotation_rad=self.last_rotation_rad)
         return intent
 
+    @staticmethod
+    def _frame_key(frame):
+        return (frame.host_timestamp_ns, frame.sequence_id)
+
+    def _predict_independent(self, sample):
+        """Advance each estimator only on its own fresh input, never on another source's tick."""
+        timeout = self.configs.phase3.sensor_timeout_ms / 1000.0
+        self.prediction_updated = False
+        sleeve_fresh = (sample.sleeve is not None
+                        and 0 <= time.monotonic() - sample.sleeve.timestamp <= timeout)
+        sleeve_key = self._frame_key(sample.sleeve) if sleeve_fresh else None
+        if self.backend == "dual_imu":
+            pair = None if sample.imu1 is None or sample.imu2 is None else (sample.imu1, sample.imu2)
+            _require_fresh_pair(pair, timeout, "shoulder")
+            shoulder_key = tuple(self._frame_key(frame) for frame in pair)
+        else:
+            shoulder_key = sleeve_key
+        if shoulder_key is not None and shoulder_key != self._shoulder_key:
+            self._shoulder_intent = self.shoulder.predict(sample)
+            self._shoulder_key = shoulder_key
+            self.prediction_updated = True
+        if self._shoulder_intent is None:
+            raise ValueError("no fresh shoulder prediction available")
+        if self.elbow is not None:
+            if sleeve_key is not None and sleeve_key != self._elbow_key:
+                self._elbow_angle = self.elbow.predict(sample).elbow_flexion
+                self._elbow_key = sleeve_key
+                self.prediction_updated = True
+            if self._elbow_angle is None:
+                raise ValueError("no fresh Sleeve elbow prediction available")
+        intent = replace(self._shoulder_intent, elbow_flexion=self._elbow_angle)
+        if self.rotation is not None:
+            try:
+                frames = _require_fresh_pair(self.sensors.rotation_pair, timeout, "upper-arm rotation")
+                key = tuple(self._frame_key(frame) for frame in frames)
+                if key != self._rotation_key:
+                    self.rotation_result = self.rotation.update(*frames)
+                    self.last_rotation_rad = math.radians(self.rotation_result.difference_deg)
+                    self._rotation_key = key
+                    self.last_rotation_frames = frames
+                    self.prediction_updated = True
+                _require_fresh_pair(frames, timeout, "upper-arm rotation")
+            except Exception as exc:
+                raise RotationPredictionError(
+                    exc, replace(intent, upper_arm_rotation_rad=self.last_rotation_rad),
+                ) from exc
+            intent = replace(intent, upper_arm_rotation_rad=self.last_rotation_rad)
+        if self.backend == "dual_imu":
+            _require_fresh_pair(pair, timeout, "shoulder")
+        return intent
+
     def diagnostics(self):
         return dict(backend=self.backend, rotation_result=self.rotation_result,
                     rotation_rad=self.last_rotation_rad,
@@ -290,4 +348,5 @@ def create_intent_pipeline(args, configs):
         return None
     return IntentPipeline(configs, reuse_calibration=args.reuse_calibration,
                           calibration_seconds=args.calibration_seconds,
-                          calibration_output=args.calibration_output)
+                          calibration_output=args.calibration_output,
+                          independent_updates=args.robot in ("aurora", "aurora-fake"))

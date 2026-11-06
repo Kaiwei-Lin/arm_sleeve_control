@@ -20,7 +20,8 @@ HAND_LIMITS = ((0.12, 1.28), (0.17, 1.78), (0.17, 1.78),
 
 
 class GloveRuntime:
-    def __init__(self, config: GloveConfig, *, mode="real", clock=None, serial_factory=None):
+    def __init__(self, config: GloveConfig, *, mode="real", clock=None, serial_factory=None,
+                 hold_on_stale=False, print_fn=print):
         validate_glove_config(config)
         if mode not in ("real", "fake"):
             raise ValueError("glove mode must be real or fake")
@@ -37,6 +38,10 @@ class GloveRuntime:
         self.clock = clock or time
         self.serial_factory = serial_factory
         self.source = None
+        self.hold_on_stale = hold_on_stale
+        self.print = print_fn
+        self._last_reading = self._last_targets = None
+        self.stale = False
         # Preflight before RobotRuntime.connect(); constructors never open serial.
         self._prepared_source = self._make_source()
 
@@ -84,6 +89,8 @@ class GloveRuntime:
     def start(self):
         if self.source is not None:
             raise RuntimeError("glove runtime is already started")
+        self._last_reading = self._last_targets = None
+        self.stale = False
         self.source = self._prepared_source or self._make_source()
         self._prepared_source = None
         self.started_at = self.clock.monotonic()
@@ -134,7 +141,7 @@ class GloveRuntime:
     def _check_age(self, reading):
         age = self.clock.monotonic() - reading.timestamp
         if (not math.isfinite(age) or age < 0
-                or (age > self.config.stale_timeout_s and not self.hold_last_on_stale)):
+                or (age > self.config.stale_timeout_s and not (self.hold_last_on_stale or self.hold_on_stale))):
             raise RuntimeError(f"glove watchdog: stale/invalid {self.config.backend} packet ({age:.3f}s)"
                                f"{self._serial_diagnostics()}")
         return age
@@ -143,7 +150,11 @@ class GloveRuntime:
         # Source retains the last complete frame on empty reads. Always poll it
         # so reader failures propagate, even while retaining an old target.
         reading = self.latest()
-        if reading is None or reading.status != "ok":
+        if reading is None:
+            if self.hold_on_stale and self._last_reading is not None:
+                return self._last_reading
+            raise RuntimeError("glove is not ready/calibrated")
+        if reading.status != "ok":
             raise RuntimeError("glove is not ready/calibrated")
         self._check_age(reading)
         return reading
@@ -173,20 +184,30 @@ class GloveRuntime:
         return self._targets_from_reading(self.check_readable())
 
     def _targets_from_reading(self, reading):
-        self._check_age(reading)
+        age = self._check_age(reading)
         if reading.status != "ok":
             raise RuntimeError("glove is not ready/calibrated")
         values = (self._bend6_values(reading) if self.config.backend == "bend6"
                   else [reading.curls[name] for name in HAND_FINGERS])
         if any(not math.isfinite(v) or not 0 <= v <= 1 for v in values):
             raise ValueError("glove inputs must be finite values in [0, 1]")
+        if self.hold_on_stale and age > self.config.stale_timeout_s:
+            if self._last_targets is None:
+                raise RuntimeError("glove watchdog: no fresh validated hand targets")
+            if not self.stale:
+                self.print(f"WARNING: {self.config.backend} stale ({age:.3f}s); reusing last hand targets; IMU updates continue")
+            self.stale = True
+            return dict(self._last_targets)
+        self.stale = False
         targets = dict(zip(HAND_JOINTS, (
             opened + curl * (closed - opened)
             for curl, opened, closed in zip(values, self.config.open_pose_rad, self.config.closed_pose_rad)
         )))
         if any(not math.isfinite(v) for v in targets.values()):
             raise ValueError("glove targets must be finite")
-        return targets
+        self._last_reading = reading
+        self._last_targets = targets
+        return dict(targets)
 
     def describe_startup(self, print_fn=print):
         if self.config.backend == "bend5":
@@ -217,7 +238,7 @@ class GloveRuntime:
         if reading is not None:
             print_fn(f"[GLOVE {self.mode}] raw={reading.raw[:5]} "
                      f"curls={ {k: round(v, 3) for k, v in reading.curls.items()} } "
-                     f"status={reading.status}")
+                     f"status={reading.status} stale={self.stale}")
 
     def close(self):
         if self.source is not None:
@@ -228,7 +249,8 @@ class GloveRuntime:
 def create_glove_runtime(args, configs):
     if configs.offline_preview or configs.glove_mode == "none":
         return None
-    glove = GloveRuntime(configs.sensors.glove, mode=configs.glove_mode)
+    glove = GloveRuntime(configs.sensors.glove, mode=configs.glove_mode,
+                         hold_on_stale=args.robot in ("aurora", "aurora-fake"))
     if not args.print_only:
         glove.validate_for_control()
     return glove
