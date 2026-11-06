@@ -453,11 +453,11 @@ bash control.sh --print-only --duration 30
 仅使用 IMU 控制右臂可运行 `bash control.sh --glove none --duration 30`，肘关节保持启动位置。
 `--print-only` 不添加 FSM 准备或执行选项。
 
-`configs/phase3.yaml` 中的 `sleeve_stale_policy: pause` 容忍袖套短暂断流：
-最后一帧超过 `sensor_timeout_ms: 200` 时暂停发送新的手臂和手部目标，
-收到新鲜、预测有效的数据后按正常单步限速恢复；超过 `hard_timeout_ms: 1000` 则退出。
-这段时间机器人仍可能完成已经收到的最后一个目标。串口、预测、机器人反馈错误仍会退出，
-IMU-only 模式的过期退出规则不变。将该策略设为 `error` 可恢复 Aurora 首次过期即退出的行为。
+Aurora 模型控制按各传感器的新帧独立更新目标：sleeve 超过 `sensor_timeout_ms` 时警告并沿用最后的肘部目标，
+IMU 和手套仍继续更新、提交；手套延迟时同样沿用最后有效手指目标，不阻塞 IMU。
+无 sleeve 的 Aurora 路径也采用独立更新。若肩部选择三柔性传感器模型，肩部目标也会等待 sleeve。
+`sleeve_stale_policy` 的整循环暂停行为仅保留在未启用独立更新的路径。
+IMU 同步/新鲜度、启动校准、串口错误和机器人反馈检查仍然有效；具体阈值以配置文件为准。
 
 模型控制会把超出机器人关节位置范围的有限目标角度自动截到 YAML 中的
 `min_position` / `max_position`，避免仅因传感器目标越界而报 `target outside limits`。
@@ -473,6 +473,16 @@ IMU-only 模式的过期退出规则不变。将该策略设为 `error` 可恢�
 无需传感器的模拟检查可使用
 `bash control.sh --print-only --sleeve fake --imus fake --glove fake --calibration-seconds 0.2 --duration 3`，
 仍需按提示回车完成模拟标定。
+
+要自动测试延迟、断流和恢复，无需交互标定或真机，可运行：
+
+```powershell
+python tools/simulate_control_latency.py --output-dir recordings/control_latency
+```
+
+包含 sleeve 每 250 ms 更新、手套断流、同时断流和无 sleeve 场景，默认使用虚拟时钟与 fake Aurora SDK。
+也支持 `--robot aurora --aurora-profile ... --scenario sleeve250 --execute`，用模拟传感器驱动真机并测量真实提交间隔，仍需 `YES` 确认。
+参数、真机运行命令和报告说明见 [模拟传感器延迟测试](docs/control_latency_simulation.md)。
 
 ### 肩部推理器选择
 
